@@ -926,7 +926,8 @@ function renderLogin(){
     '<h1>모의주식 투자반 참가</h1>' +
     '<p>학년/반/번호와 이름, 비밀번호를 입력하면 참가돼요. 시작 자본금은 <b>1,000,000원</b>이며, 같은 정보로 다시 접속하면 다른 기기에서도 이어서 할 수 있어요.</p>' +
     '<div class="field"><label for="in-code">학년/반/번호</label><input type="text" id="in-code" inputmode="numeric" placeholder="예: 3101" maxlength="12" value="' + esc(draft.code||'') + '"></div>' +
-    '<div class="field"><label for="in-name">이름</label><input type="text" id="in-name" placeholder="예: 김기섭" maxlength="20" value="' + esc(draft.name||'') + '"></div>' +
+    '<div class="field"><label for="in-name">이름</label><input type="text" id="in-name" placeholder="예: 김기섭" maxlength="20" value="' + esc(draft.name||'') + '">' +
+      '<div class="hint name-hint" style="margin-top:5px;"><b>중학생은 이름 뒤에 (중)을 붙여 주세요.</b> 예: 김도개(중)</div></div>' +
     '<div class="field"><label for="in-pin">비밀번호 (숫자 4자리)</label><input type="password" id="in-pin" inputmode="numeric" pattern="[0-9]*" placeholder="숫자 4자리" maxlength="4" autocomplete="off">' +
       '<div class="hint" style="margin-top:5px;">처음 참가할 때 입력한 번호가 내 비밀번호가 돼요. 다음부터는 같은 번호로 들어오세요. 잊어버리면 선생님께 초기화를 요청하세요.</div></div>' +
     '<div id="login-err" class="err" hidden></div>' +
