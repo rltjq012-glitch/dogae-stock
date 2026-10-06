@@ -726,6 +726,14 @@ function loginStudent(code, name, pin){
 
 // 매수/매도. 현금·보유수량 변경과 체결 기록 추가를 한 번의 원자적 쓰기로 보낸다(둘 다 되거나 둘 다 안 됨).
 // 체결 시각은 서버가 찍는다(규칙이 "ts === 서버 현재시각"만 허용).
+// 수수료·세금: 매수/매도 때마다 매매수수료 0.015%, 매도할 때만 거래세 0.18% (원 단위 반올림).
+// 체결 기록(total)은 수수료 전 금액으로 저장하고, 수수료·세금은 이 함수로 항상 같은 값이 다시 계산된다.
+var FEE_RATE = 0.00015, TAX_RATE = 0.0018;
+function calcCosts(side, total){
+  var fee = Math.round(total * FEE_RATE);
+  var tax = side === 'sell' ? Math.round(total * TAX_RATE) : 0;
+  return { fee:fee, tax:tax, cost:fee + tax };
+}
 function submitTrade(stockId, side, qty){
   var me = UI.me, s = me && STATE.students[me.key];
   if(!s) return Promise.reject({ ui:'계정을 찾을 수 없어요.' });
@@ -737,13 +745,14 @@ function submitTrade(stockId, side, qty){
   var price = priceAt(stockId, status.idx);
   var total = qty * price;
   var have = s.holdings[stockId] || 0;
+  var costs = calcCosts(side, total);
   var newCash, newQty;
   if(side === 'buy'){
-    if(s.cash < total) return Promise.reject({ ui:'현금이 부족해요.' });
-    newCash = s.cash - total; newQty = have + qty;
+    if(s.cash < total + costs.cost) return Promise.reject({ ui:'현금이 부족해요. (수수료 포함 ' + won(total + costs.cost) + ' 필요)' });
+    newCash = s.cash - total - costs.cost; newQty = have + qty;
   } else {
     if(have < qty) return Promise.reject({ ui:'보유 수량이 부족해요.' });
-    newCash = s.cash + total; newQty = have - qty;
+    newCash = s.cash + total - costs.cost; newQty = have - qty;
   }
   var tid = 't' + nowMs().toString(36) + Math.random().toString(36).slice(2, 7);
   var upd = {};
@@ -960,7 +969,11 @@ function renderOnboarding(){
       '<p><b>도개지수</b>는 10종목 전체의 평균 움직임을 보여주는 숫자예요(시작 1,000). <b>도개지수 ETF</b>는 이 지수를 그대로 따라가는 종목이라, 이것 하나만 사도 10종목에 골고루 투자한 효과가 나요. 한 종목에 몰아서 투자하는 것과 수익률·위험이 어떻게 다른지 비교해 보세요.</p>' +
     '</div>' +
     '<div class="onboard-section">' +
-      '<h3>⑤ 매매일지 작성</h3>' +
+      '<h3>⑤ 수수료와 세금</h3>' +
+      '<p>실제 증권거래처럼 <b>사고팔 때마다 매매 수수료 0.015%</b>가 빠지고, <b>팔 때는 거래세 0.18%</b>가 더 빠져요. 예를 들어 100,000원어치를 사면 수수료 15원이 붙고, 100,000원어치를 팔면 수수료 15원과 거래세 180원, 합쳐서 195원이 빠져요. 사고팔기를 너무 자주 하면 수수료와 세금 때문에 손해가 쌓이니, 거래 전에 꼭 필요한지 생각해 보세요. 랭킹도 수수료·세금을 뺀 실제 자산으로 계산돼요.</p>' +
+    '</div>' +
+    '<div class="onboard-section">' +
+      '<h3>⑥ 매매일지 작성</h3>' +
       '<p>매수·매도할 때마다 "매매일지" 탭에 거래 내역이 자동으로 기록돼요. 각 거래마다 <b>왜 그렇게 판단했는지 근거를 간단히 적어야</b> 해요. 선생님이 매매일지를 참고해서 투자 습관을 평가할 수 있어요.</p>' +
     '</div>' +
     '<div class="onboard-check">' +
@@ -1024,7 +1037,8 @@ function renderDetail(status, stockId){
   var cash = student ? student.cash : 0;
   var qty = UI.qty;
   var total = qty * price;
-  var canBuy = student && status.tradingOpen && FB.connected && cash >= total && qty > 0;
+  var costs = calcCosts(UI.tradeSide, total);
+  var canBuy = student && status.tradingOpen && FB.connected && cash >= total + costs.cost && qty > 0;
   var canSell = student && status.tradingOpen && FB.connected && have >= qty && qty > 0;
   var tagMap = { profile:['news','기업소개'], news:['news','뉴스'], rumor:['rumor','찌라시'], debunk:['debunk','정정보도'] };
   var recent = scriptedNotices(status).filter(function(n){ return n.stockId === stockId && n.type !== 'profile'; })
@@ -1097,7 +1111,10 @@ function renderDetail(status, stockId){
         '<button id="qty-plus">＋</button>' +
       '</div>' +
       '<div class="trade-summary"><span>1주 가격</span><b class="mono">' + won(price) + '</b></div>' +
-      '<div class="trade-summary"><span>주문 총액</span><b class="mono">' + won(total) + '</b></div>' +
+      '<div class="trade-summary"><span>주문 금액</span><b class="mono">' + won(total) + '</b></div>' +
+      '<div class="trade-summary"><span>매매 수수료 (0.015%)</span><b class="mono">' + won(costs.fee) + '</b></div>' +
+      (UI.tradeSide==='sell' ? '<div class="trade-summary"><span>거래세 (0.18%)</span><b class="mono">' + won(costs.tax) + '</b></div>' : '') +
+      '<div class="trade-summary"><span>' + (UI.tradeSide==='buy' ? '실제 결제 금액' : '실제 받을 금액') + '</span><b class="mono">' + won(UI.tradeSide==='buy' ? total + costs.cost : total - costs.cost) + '</b></div>' +
       '<div class="trade-summary"><span>보유 현금</span><b class="mono">' + won(cash) + '</b></div>' +
       '<div class="trade-summary"><span>보유 수량</span><b class="mono">' + have + '주</b></div>' +
       '<div style="height:10px;"></div>' +
@@ -1206,7 +1223,7 @@ function renderJournal(status){
         '<span><span class="' + (t.side==='buy'?'side-buy':'side-sell') + '">' + (t.side==='buy'?'매수':'매도') + '</span> ' + esc(st.name) + ' ' + t.qty + '주</span>' +
         '<span class="ts mono">' + fmtDateShort(t.ts) + '</span>' +
       '</div>' +
-      '<div class="sub mono" style="color:var(--ink-faint);font-size:12px;margin:2px 0 8px;">@' + t.price.toLocaleString('ko-KR') + '원 · 총 ' + won(t.total) + '</div>' +
+      '<div class="sub mono" style="color:var(--ink-faint);font-size:12px;margin:2px 0 8px;">@' + t.price.toLocaleString('ko-KR') + '원 · 총 ' + won(t.total) + (function(){ var c = calcCosts(t.side, t.total); return ' · 수수료·세금 ' + won(c.cost); })() + '</div>' +
       '<textarea class="journal-reason" data-tid="' + esc(t.id) + '" maxlength="500" placeholder="이 매매를 결정한 근거를 간단히 적어보세요 (예: 어떤 뉴스를 보고, 어떻게 판단했는지)" rows="2">' + esc(shown) + '</textarea>' +
       '<div class="journal-row-foot">' +
         '<span class="journal-status ' + (reasonSaved && !hasDraft?'ok':'') + '">' + (hasDraft?'저장 전':(reasonSaved?'✓ 저장됨':'미작성')) + '</span>' +
