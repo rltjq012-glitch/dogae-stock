@@ -254,6 +254,18 @@
     box-shadow:var(--shadow); max-width:88%; text-align:center;
   }
   .divider{ height:1px; background:var(--line); margin:12px 0; border:none; }
+  .blind-card{ text-align:center; }
+  .blind-card p{ color:var(--ink-soft); font-size:13.5px; line-height:1.6; margin:0 0 12px; }
+  .blind-card .kv{ text-align:left; }
+  .blind-big{ font-size:56px; font-weight:800; color:var(--ink-faint); line-height:1; margin:8px 0 12px; }
+  .award-group{ border:1px solid var(--line); border-radius:12px; padding:8px 12px; margin-bottom:10px; }
+  .award-head{ font-weight:700; font-size:14px; padding:4px 0 6px; border-bottom:1px solid var(--line); margin-bottom:2px; }
+  .award-head span{ font-weight:400; color:var(--ink-faint); font-size:12px; }
+  .award-row{ display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--line); font-size:13px; }
+  .award-row:last-child{ border-bottom:0; }
+  .award-rank{ width:24px; text-align:center; font-weight:800; color:var(--ink-soft); flex-shrink:0; }
+  .award-name{ flex:1; min-width:0; overflow-wrap:anywhere; }
+  .award-val{ text-align:right; font-size:12px; line-height:1.35; flex-shrink:0; }
   .admin-link{ text-align:center; padding:14px 0 4px; }
   .admin-link button{ background:none; border:none; color:var(--ink-faint); font-size:11.5px; cursor:pointer; text-decoration:underline; }
   .kv{ display:flex; justify-content:space-between; font-size:13px; padding:6px 0; border-bottom:1px solid var(--line); }
@@ -1083,13 +1095,13 @@ function renderOnboarding(){
     '<h1>시작하기 전에 꼭 읽어주세요</h1>' +
     '<div class="onboard-section">' +
       '<h3>① 게임 개요</h3>' +
-      '<p><b>10월 12일(월)부터 10월 22일(목) 낮 12:00까지</b>, 주말을 뺀 평일 9일 동안 진행되는 모의주식 투자 대회예요. 시작 자본금은 <b>1,000,000원</b>이고, 마지막 날(10/22) 낮 12시 기준 수익률로 전체 랭킹이 매겨져요.</p>' +
+      '<p><b>10월 12일(월)부터 10월 22일(목) 낮 12:00까지</b>, 주말을 뺀 평일 9일 동안 진행되는 모의주식 투자 대회예요. 시작 자본금은 <b>1,000,000원</b>이고, 마지막 날(10/22) 낮 12시 기준 수익률로 전체 랭킹이 매겨져요. <b>마지막 날(체육대회) 08:00~12:00에는 랭킹이 블라인드로 가려지고</b>, 12시 게임 종료와 함께 최종 순위가 공개돼요.</p>' +
     '</div>' +
     '<div class="onboard-section">' +
       '<h3>② 거래 가능 시간</h3>' +
       '<p>평일 매일 08:00에 장이 열리지만(주말에는 쉬어요), 실제 매매는 <b>쉬는시간에만</b> 가능해요: 09:20~09:30, 10:20~10:30, 11:20~11:30, 12:20~13:20(점심), 14:10~14:20, 15:10~15:20. 수업 중에는 매수/매도 버튼이 잠겨요. <b>거래 가능한 시간 동안에는 주가가 1분마다 실시간처럼 계속 움직여요</b>(수업 중에는 멈춰 있다가, 거래시간이 시작되는 순간부터 다시 바뀌어요).</p>' +
       '<p style="margin-top:8px;">그리고 <b>하교 후 17:30~20:00에도 거래시간이 한 번 더 열려요.</b> 학교에서 못 챙긴 뉴스를 집에서 확인하고 투자할 수 있는 시간이니 꼭 활용해보세요.</p>' +
-      '<p style="margin-top:8px;"><b>마지막 날인 10월 22일(목)은 체육대회</b>라서 시간표가 달라요: 이날은 08:00부터 낮 12:00까지 <b>10분 거래 + 10분 휴식을 반복</b>하고(08:00~08:10, 08:20~08:30 … 11:40~11:50), 낮 12:00에 게임 전체가 종료돼요. 평소보다 훨씬 자주 거래할 수 있으니 뉴스를 더 꼼꼼히 확인하세요.</p>' +
+      '<p style="margin-top:8px;"><b>마지막 날인 10월 22일(목)은 체육대회</b>라서 시간표가 달라요: 이날은 08:00부터 낮 12:00까지 <b>10분 거래 + 10분 휴식을 반복</b>하고(08:00~08:10, 08:20~08:30 … 11:40~11:50), 낮 12:00에 게임 전체가 종료돼요. 평소보다 훨씬 자주 거래할 수 있으니 뉴스를 더 꼼꼼히 확인하세요. 이날은 <b>랭킹이 가려진 채로</b> 진행돼요.</p>' +
     '</div>' +
     '<div class="onboard-section">' +
       '<h3>③ 뉴스 · 찌라시 읽는 법</h3>' +
@@ -1375,14 +1387,32 @@ function renderJournal(status){
   return '<main>' + summary + '<div class="card journal-list">' + rows + '</div></main>';
 }
 
-function renderRanking(status){
-  var me = UI.me;
-  var rows = Object.keys(STATE.students).map(function(key){
+// 마지막 날(체육대회, 08:00~12:00)에는 순위를 가린다(블라인드). 낮 12:00 게임 종료와 함께 최종 순위 공개.
+function isRankingBlind(status){
+  return status.day === N_DAYS - 1 && (status.phase === 'trading' || status.phase === 'inclass');
+}
+function rankingRows(status){
+  return Object.keys(STATE.students).map(function(key){
     var s = STATE.students[key];
     var total = currentTotalValue(s, status.idx);
     var ret = (total/START_CAPITAL - 1) * 100;
     return { key:key, name:s.name, code:s.code, total:total, ret:ret };
   }).sort(function(a,b){ return b.total - a.total; });
+}
+function renderRanking(status){
+  var me = UI.me;
+  var rows = rankingRows(status);
+  if(isRankingBlind(status)){
+    var mine = null;
+    rows.forEach(function(r){ if(me && r.key === me.key) mine = r; });
+    return '<main><div class="card blind-card"><h2>랭킹 블라인드 중</h2>' +
+      '<div class="blind-big">?</div>' +
+      '<p>마지막 날(체육대회)에는 순위가 가려져요. <b>낮 12:00 게임 종료와 함께 최종 순위가 공개</b>돼요. 끝까지 내 판단을 믿고 투자해 보세요!</p>' +
+      '<div class="kv"><span>참가 학생</span><b>' + rows.length + '명</b></div>' +
+      (mine ? '<div class="kv"><span>내 현재 수익률</span><b class="mono ' + pctClass(mine.ret) + '">' + pctStr(mine.ret) + '</b></div>' : '') +
+      '</div>' +
+      '<div class="admin-link"><button id="btn-admin">선생님 관리자 메뉴</button></div></main>';
+  }
   var body;
   if(!rows.length){ body = '<div class="empty">아직 참가한 학생이 없어요.</div>'; }
   else {
@@ -1395,7 +1425,8 @@ function renderRanking(status){
         '</div>';
     }).join('');
   }
-  return '<main><div class="card"><h2>실시간 수익률 랭킹 (' + rows.length + '명 참가)</h2>' + body + '</div>' +
+  var title = status.phase === 'ended' ? '최종 수익률 순위 (게임 종료 · ' + rows.length + '명 참가)' : '실시간 수익률 랭킹 (' + rows.length + '명 참가)';
+  return '<main><div class="card"><h2>' + title + '</h2>' + body + '</div>' +
     '<div class="admin-link"><button id="btn-admin">선생님 관리자 메뉴</button></div></main>';
 }
 
@@ -1410,6 +1441,60 @@ function renderTabbar(){
 // 관리자 비밀번호 최초 설정 화면은 주소 끝에 #setup 을 붙여 열었을 때만 나온다(선생님이 배포 전에 1회).
 function isSetupMode(){
   return !STATE.config.adminSet && String(location.hash || '').toLowerCase() === '#setup';
+}
+// ---- 시상용 순위(선생님만): 고등부·중등부 각각 상위 15명 ----
+// 중학생은 이름 뒤에 (중)을 붙여 참가한다. 띄어쓰기·전각 괄호도 같은 것으로 본다.
+var AWARD_TOP = 15;
+function isMiddleSchool(name){
+  return String(name || '').replace(/\s+/g, '').replace(/（/g, '(').replace(/）/g, ')').indexOf('(중)') >= 0;
+}
+// 같은 총자산은 같은 등수(1, 2, 2, 4 …)
+function rankWithTies(rows){
+  var out = [];
+  rows.forEach(function(r, i){
+    var rank = (i > 0 && Math.round(r.total) === Math.round(rows[i-1].total)) ? out[i-1].rank : i + 1;
+    out.push({ rank:rank, r:r });
+  });
+  return out;
+}
+function awardGroups(status){
+  var all = rankingRows(status);
+  return [
+    { id:'high', title:'고등부', list: rankWithTies(all.filter(function(r){ return !isMiddleSchool(r.name); })) },
+    { id:'mid',  title:'중등부', list: rankWithTies(all.filter(function(r){ return isMiddleSchool(r.name); })) }
+  ].map(function(g){ g.total = g.list.length; g.top = g.list.filter(function(x){ return x.rank <= AWARD_TOP; }); return g; });
+}
+function awardBasis(status){
+  if(status.phase === 'ended') return '최종 결과 (10/22 낮 12:00 마감)';
+  return '지금 시점 기준 · 최종 결과는 10/22 낮 12:00 이후 확정';
+}
+function renderAwardBoard(status){
+  var groups = awardGroups(status);
+  return '<label>시상용 순위 (선생님만 보여요)</label>' +
+    '<div class="hint" style="margin:0 0 8px;">' + awardBasis(status) + '. 이름에 <b>(중)</b>이 있으면 중등부로 나눠요. 같은 총자산은 같은 등수예요.</div>' +
+    groups.map(function(g){
+      var rows = g.top.length ? g.top.map(function(x){
+        var r = x.r;
+        return '<div class="award-row"><span class="award-rank">' + x.rank + '</span>' +
+          '<span class="award-name"><b class="mono">' + esc(r.code) + '</b> ' + esc(r.name) + '</span>' +
+          '<span class="award-val mono">' + won(r.total) + '<br><b class="' + pctClass(r.ret) + '">' + pctStr(r.ret) + '</b></span></div>';
+      }).join('') : '<div class="empty" style="padding:8px 0;">참가자가 없어요.</div>';
+      return '<div class="award-group"><div class="award-head">' + g.title + ' 상위 ' + AWARD_TOP + '등 <span>(' + g.total + '명 참가)</span></div>' + rows + '</div>';
+    }).join('') +
+    '<button class="btn btn-ghost" id="admin-copy-award" style="margin-top:6px;">시상용 순위 복사하기 (엑셀·한글에 붙여넣기)</button>';
+}
+// 복사용 텍스트: 탭으로 구분해 엑셀에 붙여넣으면 칸이 나뉜다
+function awardText(status){
+  var lines = ['도개 모의투자 대회 시상용 순위 — ' + awardBasis(status), ''];
+  awardGroups(status).forEach(function(g){
+    lines.push('[' + g.title + ' 상위 ' + AWARD_TOP + '등] (' + g.total + '명 참가)');
+    lines.push(['등수','학번','이름','총자산(원)','수익률(%)'].join('\t'));
+    g.top.forEach(function(x){
+      lines.push([x.rank, x.r.code, x.r.name, Math.round(x.r.total), x.r.ret.toFixed(2)].join('\t'));
+    });
+    lines.push('');
+  });
+  return lines.join('\n');
 }
 function renderAdminModal(){
   if(!UI.adminOpen) return '';
@@ -1433,6 +1518,7 @@ function renderAdminModal(){
       '</div></div>';
   }
   var cfg = STATE.config;
+  var adminStatus = getMarketStatus(nowMs());
   var keys = Object.keys(STATE.students).sort(function(a,b){
     var sa = STATE.students[a], sb = STATE.students[b];
     return sa.code < sb.code ? -1 : sa.code > sb.code ? 1 : (sa.name < sb.name ? -1 : 1);
@@ -1449,6 +1535,8 @@ function renderAdminModal(){
     '<h3>선생님 관리자 메뉴</h3>' +
     '<div class="kv"><span>참가 학생 수</span><b>' + keys.length + '명</b></div>' +
     '<div class="kv"><span>게임 시작일 (Day 1)</span><b>' + (cfg.day1Date||'미설정') + '</b></div>' +
+    '<hr class="divider">' +
+    renderAwardBoard(adminStatus) +
     '<hr class="divider">' +
     '<div class="field"><label for="admin-day1">게임 시작일 설정 (Day 1, KST)</label>' +
       '<input type="date" id="admin-day1" value="' + (cfg.day1Date||'') + '"></div>' +
@@ -1743,6 +1831,20 @@ function wireEvents(){
       var v = byId('admin-day1').value;
       if(!v){ toast('날짜를 선택하세요.'); return; }
       adminSetDay1(v).then(function(){ toast('시작일이 저장됐어요.'); render(); }, function(err){ failToast(err); });
+    });
+  }
+  if(byId('admin-copy-award')){
+    byId('admin-copy-award').addEventListener('click', function(){
+      var text = awardText(getMarketStatus(nowMs()));
+      var done = function(){ toast('시상용 순위를 복사했어요. 엑셀이나 한글에 붙여넣으세요.'); };
+      var fallback = function(){
+        var ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try{ document.execCommand('copy'); done(); }catch(e){ toast('복사하지 못했어요.'); }
+        document.body.removeChild(ta);
+      };
+      if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
+      else fallback();
     });
   }
   if(byId('admin-add-notice')){
