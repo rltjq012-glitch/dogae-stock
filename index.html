@@ -144,6 +144,11 @@
   .qty-row{ display:flex; align-items:center; gap:8px; }
   .qty-row button{ width:38px; height:38px; border-radius:10px; border:1px solid var(--line); background:var(--surface); font-size:17px; cursor:pointer; color:var(--ink); }
   .qty-row input{ text-align:center; }
+  .qty-quick{ display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:6px; margin:0 0 12px; }
+  .qty-quick button{ min-height:36px; padding:4px 2px; border-radius:9px; border:1px solid var(--line); background:var(--surface); color:var(--ink); font-size:12.5px; font-family:inherit; cursor:pointer; }
+  .qty-quick .qty-max{ font-weight:700; border-color:var(--accent); }
+  .holding-row[data-stock]{ cursor:pointer; }
+  .h2-sub{ font-size:12.5px; font-weight:600; margin-left:6px; }
   .trade-summary{ display:flex; justify-content:space-between; font-size:13px; color:var(--ink-soft); padding:4px 0; }
   .trade-summary b{ color:var(--ink); font-weight:600; }
   .vol-row{ display:flex; justify-content:space-between; align-items:baseline; font-size:12.5px; color:var(--ink-soft); margin-top:2px; }
@@ -266,6 +271,23 @@
   .award-rank{ width:24px; text-align:center; font-weight:800; color:var(--ink-soft); flex-shrink:0; }
   .award-name{ flex:1; min-width:0; overflow-wrap:anywhere; }
   .award-val{ text-align:right; font-size:12px; line-height:1.35; flex-shrink:0; }
+  .fav-btn{ margin-left:auto; flex-shrink:0; min-height:34px; padding:4px 12px; border-radius:999px; border:1px solid var(--line); background:var(--surface); color:var(--ink-soft); font-size:13px; font-family:inherit; cursor:pointer; }
+  .fav-btn.on{ color:#b7791f; border-color:#d69e2e; font-weight:700; }
+  .fav-mark{ color:#d69e2e; }
+  .realized{ font-size:12.5px; font-weight:700; margin:-4px 0 8px; }
+  .realized span{ font-weight:400; color:var(--ink-faint); font-size:11.5px; }
+  .legend{ display:flex; gap:16px; flex-wrap:wrap; font-size:13px; margin-top:6px; }
+  .legend i{ display:inline-block; width:14px; height:3px; border-radius:2px; vertical-align:middle; margin-right:5px; }
+  .lg-me{ background:var(--accent); } .lg-ix{ background:var(--ink-faint); }
+  .audit-row{ border:1px solid var(--down); border-radius:10px; padding:8px 10px; margin-bottom:6px; font-size:13px; }
+  .audit-row ul{ margin:4px 0 0; padding-left:18px; color:var(--down); font-size:12.5px; }
+  .audit-ok{ font-size:13px; font-weight:600; color:var(--news); padding:4px 0; }
+  .jb-row{ border-bottom:1px solid var(--line); }
+  .jb-toggle{ width:100%; display:flex; justify-content:space-between; align-items:center; gap:8px; padding:9px 2px; background:none; border:0; color:var(--ink); font-size:13px; font-family:inherit; cursor:pointer; text-align:left; }
+  .jb-count{ font-size:12px; color:var(--ink-soft); flex-shrink:0; }
+  .jb-detail{ padding:0 2px 8px; }
+  .jb-trade{ font-size:12.5px; padding:6px 0; border-top:1px dashed var(--line); }
+  .jb-why{ margin-top:3px; color:var(--ink-soft); white-space:pre-wrap; overflow-wrap:anywhere; }
   .admin-link{ text-align:center; padding:14px 0 4px; }
   .admin-link button{ background:none; border:none; color:var(--ink-faint); font-size:11.5px; cursor:pointer; text-decoration:underline; }
   .kv{ display:flex; justify-content:space-between; font-size:13px; padding:6px 0; border-bottom:1px solid var(--line); }
@@ -862,6 +884,43 @@ function calcCosts(side, total){
   var tax = side === 'sell' ? Math.round(total * TAX_RATE) : 0;
   return { fee:fee, tax:tax, cost:fee + tax };
 }
+// 수수료 포함으로 살 수 있는 최대 수량
+function maxBuyQty(cash, price){
+  if(!(price > 0)) return 0;
+  var q = Math.floor(cash / (price * (1 + FEE_RATE)));
+  var cost = function(n){ var t = n * price; return t + calcCosts('buy', t).cost; };
+  while(cost(q + 1) <= cash) q++;
+  while(q > 0 && cost(q) > cash) q--;
+  return Math.max(0, q);
+}
+// 거래 기록으로 다시 계산한 장부.
+//  pos[종목]   : 보유 수량, 평단가(avg, 수수료 제외 — 화면 표시용), basis(수수료 포함 매입원가)
+//  realized[거래id] : 매도 거래의 실현손익 = (받은 돈 - 수수료·세금) - 판 만큼의 매입원가(산 때 수수료 포함)
+//  cash        : 기록대로라면 있어야 할 현금 (관리자 점검용)
+// 평단가는 이동평균: 살 때만 바뀌고, 팔 때는 그대로, 다 팔면 초기화.
+function ledger(student){
+  var pos = {}, realized = {}, realizedSum = 0, cash = START_CAPITAL;
+  student.trades.slice().sort(function(a,b){ return a.ts - b.ts; }).forEach(function(t){
+    var p = pos[t.stockId] || (pos[t.stockId] = { qty:0, avg:0, basis:0 });
+    var c = calcCosts(t.side, t.total);
+    if(t.side === 'buy'){
+      p.avg = (p.avg * p.qty + t.price * t.qty) / (p.qty + t.qty); p.qty += t.qty;
+      p.basis += t.total + c.cost; cash -= t.total + c.cost;
+    } else {
+      var q = Math.min(t.qty, p.qty), basisOut = p.qty > 0 ? p.basis * q / p.qty : 0;
+      var r = Math.round((t.total - c.cost) - basisOut);
+      realized[t.id] = r; realizedSum += r;
+      p.basis -= basisOut; p.qty -= t.qty; cash += t.total - c.cost;
+      if(p.qty <= 0){ p.qty = 0; p.avg = 0; p.basis = 0; }
+    }
+  });
+  return { pos:pos, realized:realized, realizedSum:realizedSum, cash:cash };
+}
+function avgCosts(student){ return ledger(student).pos; }
+function avgCostOf(student, stockId){
+  var c = avgCosts(student)[stockId];
+  return c && c.avg > 0 ? c.avg : null;
+}
 function submitTrade(stockId, side, qty){
   var me = UI.me, s = me && STATE.students[me.key];
   if(!s) return Promise.reject({ ui:'계정을 찾을 수 없어요.' });
@@ -968,6 +1027,7 @@ function adminResetAll(){
 function won(n){ return Math.round(n).toLocaleString('ko-KR') + '원'; }
 function pctStr(p){ var s=(p>=0?'+':'')+p.toFixed(1)+'%'; return s; }
 function pctClass(p){ return p >= 0 ? 'up-text' : 'down-text'; }
+function signedWon(n){ n = Math.round(n); return (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n).toLocaleString('ko-KR') + '원'; }
 function esc(str){ return String(str).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
 
 /* ============ 7. SPARKLINE SVG ============ */
@@ -1023,6 +1083,12 @@ function toast(msg){
   toastTimer = setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); }, 2600);
 }
 
+/* ---- 관심 종목(★): 이 기기에만 저장 ---- */
+function loadFav(){ try{ var v = JSON.parse(localStorage.getItem('msi_fav') || '[]'); return Array.isArray(v) ? v : []; }catch(e){ return []; } }
+function saveFav(list){ try{ localStorage.setItem('msi_fav', JSON.stringify(list)); }catch(e){} }
+function isFav(id){ return UI.fav.indexOf(id) >= 0; }
+function toggleFav(id){ if(isFav(id)) UI.fav = UI.fav.filter(function(x){ return x !== id; }); else UI.fav.push(id); saveFav(UI.fav); }
+
 /* ============ 9. VIEW STATE (client-local UI only, not persisted to shared state) ============ */
 var UI = {
   tab: 'market',        // market | portfolio | notices | journal | ranking
@@ -1038,7 +1104,10 @@ var UI = {
   sessionChecked: false, // 저장된 참가 정보가 아직 유효한지 서버에 확인했는가
   joining: false,        // 참가/로그인 처리 중
   loginDraft: null,      // 로그인 실패 시 입력값 복원용 {code, name}
-  drafts: {}             // 매매일지 작성 중인(아직 저장 안 한) 글: 거래id -> 글
+  drafts: {},            // 매매일지 작성 중인(아직 저장 안 한) 글: 거래id -> 글
+  fav: loadFav(),        // 관심 종목 id 목록(이 기기)
+  adminJournal: null,    // 관리자: 불러온 전체 매매일지 {학생key: {거래id: 글}}
+  adminJournalOpen: null // 관리자: 펼쳐 본 학생 key
 };
 
 /* ============ 10. RENDERERS ============ */
@@ -1137,7 +1206,8 @@ function marketDataBanner(status){
   return '<div class="card" style="border-color:var(--down);"><div class="hint" style="margin:0;color:var(--down);font-weight:600;">' + msg + '</div></div>';
 }
 function renderMarketList(status){
-  var rows = STOCKS.map(function(st){
+  var ordered = STOCKS.filter(function(st){ return isFav(st.id); }).concat(STOCKS.filter(function(st){ return !isFav(st.id); }));
+  var rows = ordered.map(function(st){
     var price = priceAt(st.id, status.idx);
     var base = baselinePrice(st.id, status.day);
     var chg = (price/base - 1) * 100;
@@ -1145,7 +1215,7 @@ function renderMarketList(status){
     var slice = seriesUpTo(st.id, status.idx);
     return '<div class="stock-item" data-stock="' + st.id + '">' +
       sparkline(slice, 64, 28, chg>=0 ? 'var(--up)' : 'var(--down)') +
-      '<div class="sp"><div class="nm">' + esc(st.name) + (st.etf ? ' <span class="tag tag-admin">ETF</span>' : '') + '</div><div class="sector">' + esc(st.sector) + '</div></div>' +
+      '<div class="sp"><div class="nm">' + (isFav(st.id) ? '<span class="fav-mark" aria-label="관심 종목">★</span> ' : '') + esc(st.name) + (st.etf ? ' <span class="tag tag-admin">ETF</span>' : '') + '</div><div class="sector">' + esc(st.sector) + '</div></div>' +
       '<div class="price-col"><div class="pr mono">' + price.toLocaleString('ko-KR') + '</div><div class="chg mono ' + cls + '">' + pctStr(chg) + '</div></div>' +
       '</div>';
   }).join('');
@@ -1191,6 +1261,7 @@ function renderDetail(status, stockId){
   var total = qty * price;
   var costs = calcCosts(UI.tradeSide, total);
   var priceReady = tickLoaded(status.idx);
+  var myAvg = student ? avgCostOf(student, stockId) : null;
   var canBuy = student && status.tradingOpen && FB.connected && priceReady && cash >= total + costs.cost && qty > 0;
   var canSell = student && status.tradingOpen && FB.connected && priceReady && have >= qty && qty > 0;
   var tagMap = { profile:['news','기업소개'], news:['news','뉴스'], rumor:['rumor','찌라시'], debunk:['debunk','정정보도'] };
@@ -1216,7 +1287,8 @@ function renderDetail(status, stockId){
   return '<main>' +
     '<div class="backlink" id="btn-back-market">‹ 시세 목록</div>' +
     '<div class="card">' +
-      '<div class="row"><div><div style="font-size:15px;font-weight:600;">' + esc(st.name) + '</div><div style="font-size:12px;color:var(--ink-faint);">' + esc(st.sector) + '</div></div></div>' +
+      '<div class="row"><div><div style="font-size:15px;font-weight:600;">' + esc(st.name) + '</div><div style="font-size:12px;color:var(--ink-faint);">' + esc(st.sector) + '</div></div>' +
+        '<button class="fav-btn' + (isFav(stockId) ? ' on' : '') + '" id="btn-fav" aria-label="관심 종목 ' + (isFav(stockId) ? '해제' : '등록') + '">' + (isFav(stockId) ? '★ 관심' : '☆ 관심') + '</button></div>' +
       '<div class="detail-price mono">' + price.toLocaleString('ko-KR') + '<span style="font-size:14px;">원</span></div>' +
       '<div class="detail-chg mono ' + cls + '">' + pctStr(chg) + ' (전일 대비)</div>' +
       chartSvg(slice, 320, 150, color) +
@@ -1263,6 +1335,12 @@ function renderDetail(status, stockId){
         '<input type="number" id="qty-input" class="mono" min="1" value="' + qty + '">' +
         '<button id="qty-plus">＋</button>' +
       '</div>' +
+      '<div class="qty-quick">' +
+        [10, 25, 50, 100].map(function(p){
+          var lbl = p === 100 ? (UI.tradeSide === 'buy' ? '풀매수' : '풀매도') : p + '%';
+          return '<button class="qty-pct' + (p === 100 ? ' qty-max' : '') + '" data-pct="' + p + '">' + lbl + '</button>';
+        }).join('') +
+      '</div>' +
       '<div class="trade-summary"><span>1주 가격</span><b class="mono">' + won(price) + '</b></div>' +
       '<div class="trade-summary"><span>주문 금액</span><b class="mono">' + won(total) + '</b></div>' +
       '<div class="trade-summary"><span>매매 수수료 (0.015%)</span><b class="mono">' + won(costs.fee) + '</b></div>' +
@@ -1270,6 +1348,10 @@ function renderDetail(status, stockId){
       '<div class="trade-summary"><span>' + (UI.tradeSide==='buy' ? '실제 결제 금액' : '실제 받을 금액') + '</span><b class="mono">' + won(UI.tradeSide==='buy' ? total + costs.cost : total - costs.cost) + '</b></div>' +
       '<div class="trade-summary"><span>보유 현금</span><b class="mono">' + won(cash) + '</b></div>' +
       '<div class="trade-summary"><span>보유 수량</span><b class="mono">' + have + '주</b></div>' +
+      (have > 0 && myAvg ? (
+        '<div class="trade-summary"><span>내 평단가</span><b class="mono">' + won(Math.round(myAvg)) + '</b></div>' +
+        '<div class="trade-summary"><span>평가손익</span><b class="mono ' + pctClass(price - myAvg) + '">' + (price >= myAvg ? '+' : '') + won((price - myAvg) * have) + ' (' + pctStr((price / myAvg - 1) * 100) + ')</b></div>'
+      ) : '') +
       '<div style="height:10px;"></div>' +
       (UI.tradeSide==='buy'
         ? '<button class="btn btn-up" id="btn-confirm-trade" ' + (canBuy?'':'disabled') + '>' + qty + '주 매수하기</button>'
@@ -1283,25 +1365,82 @@ function renderDetail(status, stockId){
   '</main>';
 }
 
+// ---- 내 수익률 그래프: 거래 기록으로 시점마다 내 자산을 다시 계산해 도개지수와 비교 ----
+function myReturnSeries(student, idx){
+  var trades = student.trades.slice().sort(function(a,b){ return a.ts - b.ts; });
+  var tIdx = trades.map(function(t){ return getMarketStatus(t.ts).idx; });
+  var arrs = {};
+  trades.forEach(function(t){ if(!arrs[t.stockId]) arrs[t.stockId] = seriesUpTo(t.stockId, idx); });
+  var cash = START_CAPITAL, hold = {}, k = 0, out = [];
+  for(var i=0;i<=idx;i++){
+    while(k < trades.length && tIdx[k] <= i){
+      var t = trades[k], c = calcCosts(t.side, t.total);
+      if(t.side === 'buy'){ cash -= t.total + c.cost; hold[t.stockId] = (hold[t.stockId]||0) + t.qty; }
+      else { cash += t.total - c.cost; hold[t.stockId] = (hold[t.stockId]||0) - t.qty; }
+      k++;
+    }
+    var v = cash;
+    for(var id in hold){ if(hold[id] > 0) v += hold[id] * arrs[id][i]; }
+    out.push((v / START_CAPITAL - 1) * 100);
+  }
+  return out;
+}
+function compareChart(a, b, w, h){
+  a = downsample(a, 200); b = downsample(b, 200);
+  var all = a.concat(b).concat([0]);
+  var min = Math.min.apply(null, all), max = Math.max.apply(null, all);
+  if(max - min < 1){ max += 0.5; min -= 0.5; }
+  var pad = 6;
+  var y = function(v){ return (h - 2*pad) - ((v - min) / (max - min)) * (h - 2*pad) + pad; };
+  var path = function(vals){
+    var n = Math.max(2, vals.length);
+    return 'M' + vals.map(function(v, i){ return ((i / (n - 1)) * (w - 2*pad) + pad).toFixed(1) + ',' + y(v).toFixed(1); }).join(' L');
+  };
+  if(a.length < 2){ a = [a[0]||0, a[0]||0]; b = [b[0]||0, b[0]||0]; }
+  return '<svg class="chartbox" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+    '<line x1="' + pad + '" x2="' + (w - pad) + '" y1="' + y(0).toFixed(1) + '" y2="' + y(0).toFixed(1) + '" stroke="var(--line)" stroke-width="1" stroke-dasharray="4 4"/>' +
+    '<path d="' + path(b) + '" fill="none" stroke="var(--ink-faint)" stroke-width="1.6" stroke-linejoin="round"/>' +
+    '<path d="' + path(a) + '" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/></svg>';
+}
+function renderReturnChart(student, status){
+  if(status.phase === 'before' || status.phase === 'unconfigured') return '';
+  var mine = myReturnSeries(student, status.idx);
+  var idxRet = seriesUpTo(null, status.idx).map(function(v){ return (v / MARKET.index.base - 1) * 100; });
+  var my = mine[mine.length - 1] || 0, ix = idxRet[idxRet.length - 1] || 0;
+  return '<div class="card"><h2>내 수익률과 도개지수 비교</h2>' + compareChart(mine, idxRet, 320, 140) +
+    '<div class="legend"><span><i class="lg-me"></i>나 <b class="mono ' + pctClass(my) + '">' + pctStr(my) + '</b></span>' +
+    '<span><i class="lg-ix"></i>도개지수 <b class="mono ' + pctClass(ix) + '">' + pctStr(ix) + '</b></span></div>' +
+    '<div class="hint" style="margin-top:6px;">' + (my >= ix ? '지금은 시장 평균보다 <b>' + (my - ix).toFixed(1) + '%p 앞서</b> 있어요.' : '지금은 시장 평균보다 <b>' + (ix - my).toFixed(1) + '%p 뒤처져</b> 있어요. 도개지수 ETF만 샀다면 이만큼 벌었을 거예요.') + '</div></div>';
+}
 function renderPortfolio(status){
   var me = UI.me;
   if(!me) return renderLogin();
   var s = STATE.students[me.key];
   var total = currentTotalValue(s, status.idx);
   var ret = (total/START_CAPITAL - 1) * 100;
+  var L = ledger(s), avgs = L.pos;
   var holdingsRows = Object.keys(s.holdings).map(function(id){
     var qty = s.holdings[id]; var st = STOCK_MAP[id]; var price = priceAt(id, status.idx);
     var val = qty*price;
-    return { id:id, name:st.name, qty:qty, price:price, val:val };
+    var avg = avgs[id] && avgs[id].avg > 0 ? avgs[id].avg : null;
+    return { id:id, name:st.name, qty:qty, price:price, val:val, avg:avg, pl: avg ? (price - avg) * qty : null, plPct: avg ? (price / avg - 1) * 100 : null };
   }).sort(function(a,b){ return b.val - a.val; });
+  var realizedLine = '<div class="kv" style="margin-top:4px;"><span>지금까지 판 거래의 실현손익 (수수료·세금 포함)</span><b class="mono ' + pctClass(L.realizedSum) + '">' + signedWon(L.realizedSum) + '</b></div>';
+  var plSum = holdingsRows.reduce(function(a, h){ return a + (h.pl || 0); }, 0);
   var holdingsHtml = holdingsRows.length ? holdingsRows.map(function(h){
-    return '<div class="holding-row"><div><div class="nm">' + esc(h.name) + '</div><div class="sub">' + h.qty + '주 · @' + h.price.toLocaleString('ko-KR') + '원</div></div>' +
-      '<div class="right mono" style="font-weight:600;">' + won(h.val) + '</div></div>';
-  }).join('') : '<div class="empty">보유 종목이 없어요. 시세 탭에서 매수해보세요.</div>';
+    return '<div class="holding-row" data-stock="' + h.id + '"><div><div class="nm">' + esc(h.name) + '</div>' +
+      '<div class="sub">' + h.qty + '주 · 평단 ' + (h.avg ? Math.round(h.avg).toLocaleString('ko-KR') + '원' : '-') + ' · 현재 ' + h.price.toLocaleString('ko-KR') + '원</div></div>' +
+      '<div class="right mono"><div style="font-weight:600;">' + won(h.val) + '</div>' +
+      (h.pl != null ? '<div class="sub ' + pctClass(h.pl) + '" style="font-weight:600;">' + (h.pl >= 0 ? '+' : '') + won(h.pl) + ' (' + pctStr(h.plPct) + ')</div>' : '') +
+      '</div></div>';
+  }).join('') + '<div class="hint" style="margin-top:8px;">평단가 = 내가 산 평균 가격. 손익은 수수료·세금을 빼기 전 금액이에요. 종목을 누르면 바로 거래 화면으로 가요.</div>'
+    : '<div class="empty">보유 종목이 없어요. 시세 탭에서 매수해보세요.</div>';
   var tradesHtml = s.trades.length ? s.trades.slice(0,15).map(function(t){
     var st = STOCK_MAP[t.stockId];
+    var rz = L.realized[t.id];
     return '<div class="trade-log-row"><span><span class="' + (t.side==='buy'?'side-buy':'side-sell') + '">' + (t.side==='buy'?'매수':'매도') + '</span> ' + esc(st.name) + ' ' + t.qty + '주</span>' +
-      '<span class="mono">' + fmtDateShort(t.ts) + ' · ' + won(t.total) + '</span></div>';
+      '<span class="mono">' + fmtDateShort(t.ts) + ' · ' + won(t.total) +
+      (rz != null ? '<br><b class="' + pctClass(rz) + '">' + signedWon(rz) + '</b>' : '') + '</span></div>';
   }).join('') : '<div class="empty">거래 내역이 없어요.</div>';
   return '<main>' +
     '<div class="card">' +
@@ -1313,8 +1452,9 @@ function renderPortfolio(status){
         '<div class="stat-tile"><div class="lbl">주식 평가액</div><div class="val mono">' + won(total - s.cash) + '</div></div>' +
       '</div>' +
     '</div>' +
-    '<div class="card"><h2>보유 종목</h2>' + holdingsHtml + '</div>' +
-    '<div class="card"><h2>최근 거래 내역</h2>' + tradesHtml + '</div>' +
+    renderReturnChart(s, status) +
+    '<div class="card"><h2>보유 종목' + (holdingsRows.length ? ' <span class="h2-sub ' + pctClass(plSum) + '">평가손익 ' + (plSum >= 0 ? '+' : '') + won(plSum) + '</span>' : '') + '</h2>' + holdingsHtml + '</div>' +
+    '<div class="card"><h2>최근 거래 내역</h2>' + tradesHtml + (s.trades.length ? realizedLine : '') + '</div>' +
     '<div class="admin-link"><button id="btn-logout">이 기기에서 로그아웃</button></div>' +
   '</main>';
 }
@@ -1357,6 +1497,7 @@ function renderJournal(status){
   if(!me) return renderLogin();
   var s = STATE.students[me.key];
   var trades = s.trades || [];
+  var L = ledger(s);
   var writtenCount = trades.filter(function(t){ return t.reason && t.reason.trim(); }).length;
   var summary = '<div class="card">' +
     '<h2>매매일지</h2>' +
@@ -1377,6 +1518,7 @@ function renderJournal(status){
         '<span class="ts mono">' + fmtDateShort(t.ts) + '</span>' +
       '</div>' +
       '<div class="sub mono" style="color:var(--ink-faint);font-size:12px;margin:2px 0 8px;">@' + t.price.toLocaleString('ko-KR') + '원 · 총 ' + won(t.total) + (function(){ var c = calcCosts(t.side, t.total); return ' · 수수료·세금 ' + won(c.cost); })() + '</div>' +
+      (L.realized[t.id] != null ? '<div class="realized ' + pctClass(L.realized[t.id]) + '">이번 매도 실현손익 ' + signedWon(L.realized[t.id]) + ' <span>(수수료·세금 포함)</span></div>' : '') +
       '<textarea class="journal-reason" data-tid="' + esc(t.id) + '" maxlength="500" placeholder="이 매매를 결정한 근거를 간단히 적어보세요 (예: 어떤 뉴스를 보고, 어떻게 판단했는지)" rows="2">' + esc(shown) + '</textarea>' +
       '<div class="journal-row-foot">' +
         '<span class="journal-status ' + (reasonSaved && !hasDraft?'ok':'') + '">' + (hasDraft?'저장 전':(reasonSaved?'✓ 저장됨':'미작성')) + '</span>' +
@@ -1442,6 +1584,109 @@ function renderTabbar(){
 function isSetupMode(){
   return !STATE.config.adminSet && String(location.hash || '').toLowerCase() === '#setup';
 }
+// ---- 부정 의심 점검(선생님만) ----
+// 거래 기록만으로 다시 계산한 현금·보유 수량이 실제 저장값과 같은지, 체결가가 그 시각 시세와 같은지,
+// 거래 시간 안에 체결됐는지 확인한다. (학생이 개발자도구로 자기 현금·수량·체결가를 고친 경우를 잡는다)
+var AUDIT_UNKNOWN = 0;
+function auditStudent(s){
+  var L = ledger(s), issues = [];
+  if(Math.abs(L.cash - s.cash) > 2) issues.push('현금이 거래 기록과 달라요 (기록상 ' + won(L.cash) + ', 실제 ' + won(s.cash) + ')');
+  var ids = {};
+  Object.keys(L.pos).concat(Object.keys(s.holdings)).forEach(function(id){ ids[id] = true; });
+  Object.keys(ids).forEach(function(id){
+    var a = (L.pos[id] || {}).qty || 0, b = s.holdings[id] || 0;
+    if(a !== b) issues.push((STOCK_MAP[id] ? STOCK_MAP[id].name : id) + ' 보유 수량이 기록과 달라요 (기록상 ' + a + '주, 실제 ' + b + '주)');
+  });
+  var badTime = 0, badPrice = 0;
+  s.trades.forEach(function(t){
+    var st0 = getMarketStatus(t.ts), st1 = getMarketStatus(t.ts - 3000);   // 버튼 누른 순간과 서버 기록 시각의 몇 초 차이는 봐준다
+    if(!st0.tradingOpen && !st1.tradingOpen){ badTime++; return; }
+    // 그 시각의 시세 조각을 아직 이 기기에서 못 받았으면 판단을 미룬다(잘못 의심하지 않도록)
+    if(!MKT.ticks[st0.idx] || !MKT.ticks[st1.idx]){ AUDIT_UNKNOWN++; return; }
+    var match = [st0.idx - 1, st0.idx, st0.idx + 1, st1.idx].some(function(i){ return i >= 0 && MKT.ticks[i] && MKT.ticks[i].p[t.stockId] === t.price; });
+    if(!match) badPrice++;
+  });
+  if(badTime) issues.push('거래 시간이 아닐 때 체결된 거래 ' + badTime + '건');
+  if(badPrice) issues.push('그 시각 시세와 다른 가격으로 체결된 거래 ' + badPrice + '건');
+  return issues;
+}
+function renderAuditBoard(){
+  AUDIT_UNKNOWN = 0;
+  var keys = Object.keys(STATE.students);
+  var flagged = keys.map(function(k){ return { key:k, s:STATE.students[k], issues:auditStudent(STATE.students[k]) }; })
+    .filter(function(x){ return x.issues.length; });
+  return '<label>부정 의심 계정 점검</label>' +
+    '<div class="hint" style="margin:0 0 6px;">거래 기록으로 다시 계산한 현금·보유 수량, 체결 가격, 거래 시각을 실제 값과 비교해요. 개발자도구로 숫자를 고친 계정을 찾을 수 있어요.</div>' +
+    (flagged.length ? flagged.map(function(x){
+      return '<div class="audit-row"><b class="mono">' + esc(x.s.code) + '</b> ' + esc(x.s.name) +
+        '<ul>' + x.issues.map(function(i){ return '<li>' + esc(i) + '</li>'; }).join('') + '</ul></div>';
+    }).join('') : '<div class="audit-ok">✓ 이상 없음 (' + keys.length + '명 점검)</div>') +
+    (AUDIT_UNKNOWN ? '<div class="hint">시세를 아직 다 받지 못해 거래 ' + AUDIT_UNKNOWN + '건의 체결가는 확인하지 못했어요. 잠시 뒤 관리자 메뉴를 다시 열어 주세요.</div>' : '');
+}
+
+// ---- 매매일지 모아보기(선생님만) ----
+function adminLoadJournal(){
+  return FB.db.ref('journal').once('value').then(function(snap){ UI.adminJournal = snap.val() || {}; });
+}
+function journalOf(key, tid){ var j = UI.adminJournal && UI.adminJournal[key]; return j && typeof j[tid] === 'string' ? j[tid] : ''; }
+function renderJournalBoard(){
+  if(!UI.adminJournal){
+    return '<label>매매일지 모아보기</label>' +
+      '<div class="hint" style="margin:0 0 6px;">학생별 거래와 매매 근거를 한눈에 보고, 엑셀로 복사할 수 있어요. 세특·활동 기록 자료로 쓰기 좋아요.</div>' +
+      '<button class="btn btn-ghost" id="admin-load-journal">매매일지 불러오기</button>';
+  }
+  var keys = Object.keys(STATE.students).sort(function(a,b){
+    var sa = STATE.students[a], sb = STATE.students[b];
+    return sa.code < sb.code ? -1 : sa.code > sb.code ? 1 : (sa.name < sb.name ? -1 : 1);
+  });
+  var missingTotal = 0;
+  var rows = keys.map(function(key){
+    var s = STATE.students[key], n = s.trades.length;
+    var w = s.trades.filter(function(t){ return journalOf(key, t.id).trim(); }).length;
+    missingTotal += n - w;
+    var open = UI.adminJournalOpen === key, L = open ? ledger(s) : null;
+    return '<div class="jb-row"><button class="jb-toggle" data-key="' + esc(key) + '">' +
+      '<span><b class="mono">' + esc(s.code) + '</b> ' + esc(s.name) + '</span>' +
+      '<span class="jb-count">' + (n ? '일지 ' + w + '/' + n + (n - w ? ' <b class="down-text">미작성 ' + (n - w) + '</b>' : ' ✓') : '거래 없음') + ' ' + (open ? '▲' : '▼') + '</span></button>' +
+      (open ? '<div class="jb-detail">' + (n ? s.trades.slice().sort(function(a,b){ return a.ts - b.ts; }).map(function(t){
+        var st = STOCK_MAP[t.stockId], rz = L.realized[t.id], why = journalOf(key, t.id).trim();
+        return '<div class="jb-trade"><div><span class="' + (t.side==='buy'?'side-buy':'side-sell') + '">' + (t.side==='buy'?'매수':'매도') + '</span> ' + esc(st.name) + ' ' + t.qty + '주 @' + t.price.toLocaleString('ko-KR') +
+          (rz != null ? ' · <b class="' + pctClass(rz) + '">' + signedWon(rz) + '</b>' : '') + ' <span class="mono" style="color:var(--ink-faint);">' + fmtDateShort(t.ts) + '</span></div>' +
+          '<div class="jb-why">' + (why ? esc(why) : '<span class="down-text">(근거 미작성)</span>') + '</div></div>';
+      }).join('') : '<div class="empty" style="padding:6px 0;">거래가 없어요.</div>') + '</div>' : '') +
+    '</div>';
+  }).join('');
+  return '<label>매매일지 모아보기</label>' +
+    '<div class="hint" style="margin:0 0 6px;">학생을 누르면 거래별 근거가 펼쳐져요. 미작성 근거 합계 <b>' + missingTotal + '건</b>.</div>' +
+    rows +
+    '<div style="display:flex;gap:6px;margin-top:8px;">' +
+      '<button class="btn btn-ghost" id="admin-copy-journal">전체 매매일지 복사 (엑셀용)</button>' +
+      '<button class="btn btn-ghost" id="admin-load-journal" style="width:auto;">새로고침</button>' +
+    '</div>';
+}
+function journalText(){
+  var lines = [['학번','이름','일시','구분','종목','수량','체결가','금액','실현손익(수수료·세금 포함)','매매 근거'].join('\t')];
+  Object.keys(STATE.students).sort(function(a,b){ return STATE.students[a].code < STATE.students[b].code ? -1 : 1; }).forEach(function(key){
+    var s = STATE.students[key], L = ledger(s);
+    s.trades.slice().sort(function(a,b){ return a.ts - b.ts; }).forEach(function(t){
+      lines.push([s.code, s.name, fmtDateShort(t.ts), t.side === 'buy' ? '매수' : '매도', STOCK_MAP[t.stockId].name, t.qty, t.price, t.total,
+        L.realized[t.id] != null ? L.realized[t.id] : '', journalOf(key, t.id).replace(/[\t\r\n]+/g, ' ').trim()].join('\t'));
+    });
+  });
+  return lines.join('\n');
+}
+function copyText(text, okMsg){
+  var done = function(){ toast(okMsg); };
+  var fallback = function(){
+    var ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try{ document.execCommand('copy'); done(); }catch(e){ toast('복사하지 못했어요.'); }
+    document.body.removeChild(ta);
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
+  else fallback();
+}
+
 // ---- 시상용 순위(선생님만): 고등부·중등부 각각 상위 15명 ----
 // 중학생은 이름 뒤에 (중)을 붙여 참가한다. 띄어쓰기·전각 괄호도 같은 것으로 본다.
 var AWARD_TOP = 15;
@@ -1476,7 +1721,8 @@ function renderAwardBoard(status){
       var rows = g.top.length ? g.top.map(function(x){
         var r = x.r;
         return '<div class="award-row"><span class="award-rank">' + x.rank + '</span>' +
-          '<span class="award-name"><b class="mono">' + esc(r.code) + '</b> ' + esc(r.name) + '</span>' +
+          '<span class="award-name"><b class="mono">' + esc(r.code) + '</b> ' + esc(r.name) +
+            (auditStudent(STATE.students[r.key]).length ? ' <span class="down-text" title="부정 의심 점검 참고">⚠ 점검 필요</span>' : '') + '</span>' +
           '<span class="award-val mono">' + won(r.total) + '<br><b class="' + pctClass(r.ret) + '">' + pctStr(r.ret) + '</b></span></div>';
       }).join('') : '<div class="empty" style="padding:8px 0;">참가자가 없어요.</div>';
       return '<div class="award-group"><div class="award-head">' + g.title + ' 상위 ' + AWARD_TOP + '등 <span>(' + g.total + '명 참가)</span></div>' + rows + '</div>';
@@ -1537,6 +1783,10 @@ function renderAdminModal(){
     '<div class="kv"><span>게임 시작일 (Day 1)</span><b>' + (cfg.day1Date||'미설정') + '</b></div>' +
     '<hr class="divider">' +
     renderAwardBoard(adminStatus) +
+    '<hr class="divider">' +
+    renderAuditBoard() +
+    '<hr class="divider">' +
+    renderJournalBoard() +
     '<hr class="divider">' +
     '<div class="field"><label for="admin-day1">게임 시작일 설정 (Day 1, KST)</label>' +
       '<input type="date" id="admin-day1" value="' + (cfg.day1Date||'') + '"></div>' +
@@ -1743,11 +1993,29 @@ function wireEvents(){
   document.querySelectorAll('.stock-item').forEach(function(el){
     el.addEventListener('click', function(){ UI.detailStock = el.getAttribute('data-stock'); UI.qty = 1; UI.tradeSide='buy'; render(); });
   });
+  document.querySelectorAll('.holding-row[data-stock]').forEach(function(el){
+    el.addEventListener('click', function(){ UI.tab = 'market'; UI.detailStock = el.getAttribute('data-stock'); UI.qty = 1; UI.tradeSide = 'sell'; render(); });
+  });
+  if(byId('btn-fav')) byId('btn-fav').addEventListener('click', function(){
+    toggleFav(UI.detailStock); toast(isFav(UI.detailStock) ? '관심 종목에 넣었어요. 시세 목록 맨 위에 보여요.' : '관심 종목에서 뺐어요.'); render();
+  });
   if(byId('btn-back-market')){ byId('btn-back-market').addEventListener('click', function(){ UI.detailStock = null; render(); }); }
 
   if(byId('seg-buy')) byId('seg-buy').addEventListener('click', function(){ UI.tradeSide='buy'; render(); });
   if(byId('seg-sell')) byId('seg-sell').addEventListener('click', function(){ UI.tradeSide='sell'; render(); });
   if(byId('qty-minus')) byId('qty-minus').addEventListener('click', function(){ UI.qty = Math.max(1, UI.qty-1); render(); });
+  document.querySelectorAll('.qty-pct').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var pct = +btn.getAttribute('data-pct');
+      var me = UI.me, s = me && STATE.students[me.key];
+      if(!s || !UI.detailStock) return;
+      var st = getMarketStatus(nowMs()), price = priceAt(UI.detailStock, st.idx);
+      var base = UI.tradeSide === 'buy' ? maxBuyQty(s.cash, price) : (s.holdings[UI.detailStock] || 0);
+      var q = pct >= 100 ? base : Math.floor(base * pct / 100);
+      if(base <= 0){ toast(UI.tradeSide === 'buy' ? '살 수 있는 현금이 부족해요.' : '팔 수 있는 주식이 없어요.'); return; }
+      UI.qty = Math.max(1, q); render();
+    });
+  });
   if(byId('qty-plus')) byId('qty-plus').addEventListener('click', function(){ UI.qty = UI.qty+1; render(); });
   if(byId('qty-input')) byId('qty-input').addEventListener('change', function(){ var v = parseInt(byId('qty-input').value,10); UI.qty = (v && v>0) ? v : 1; render(); });
 
@@ -1778,7 +2046,7 @@ function wireEvents(){
   /* ---- 관리자 ---- */
   var closeAdmin = function(){
     var wasUnlocked = UI.adminUnlocked;
-    UI.adminOpen = false; UI.adminUnlocked = false;
+    UI.adminOpen = false; UI.adminUnlocked = false; UI.adminJournal = null; UI.adminJournalOpen = null;
     if(wasUnlocked && FB.uid) FB.db.ref('admins/' + FB.uid).remove().then(null, function(){});
     renderPending = false;
     render();
@@ -1835,18 +2103,24 @@ function wireEvents(){
   }
   if(byId('admin-copy-award')){
     byId('admin-copy-award').addEventListener('click', function(){
-      var text = awardText(getMarketStatus(nowMs()));
-      var done = function(){ toast('시상용 순위를 복사했어요. 엑셀이나 한글에 붙여넣으세요.'); };
-      var fallback = function(){
-        var ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.select();
-        try{ document.execCommand('copy'); done(); }catch(e){ toast('복사하지 못했어요.'); }
-        document.body.removeChild(ta);
-      };
-      if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
-      else fallback();
+      copyText(awardText(getMarketStatus(nowMs())), '시상용 순위를 복사했어요. 엑셀이나 한글에 붙여넣으세요.');
     });
   }
+  if(byId('admin-copy-journal')){
+    byId('admin-copy-journal').addEventListener('click', function(){
+      copyText(journalText(), '전체 매매일지를 복사했어요. 엑셀에 붙여넣으면 칸이 나뉘어요.');
+    });
+  }
+  if(byId('admin-load-journal')){
+    byId('admin-load-journal').addEventListener('click', function(){
+      adminLoadJournal().then(function(){ render(); }, function(err){ failToast(err, '매매일지를 불러오지 못했어요.'); });
+    });
+  }
+  document.querySelectorAll('.jb-toggle').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var k = btn.getAttribute('data-key'); UI.adminJournalOpen = UI.adminJournalOpen === k ? null : k; render();
+    });
+  });
   if(byId('admin-add-notice')){
     byId('admin-add-notice').addEventListener('click', function(){
       var title = byId('admin-notice-title').value.trim();
