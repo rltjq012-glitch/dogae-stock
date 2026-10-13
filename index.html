@@ -290,6 +290,18 @@
   .jb-detail{ padding:0 2px 8px; }
   .jb-trade{ font-size:12.5px; padding:6px 0; border-top:1px dashed var(--line); }
   .jb-why{ margin-top:3px; color:var(--ink-soft); white-space:pre-wrap; overflow-wrap:anywhere; }
+  .pl-hero{ display:flex; justify-content:space-between; align-items:flex-end; gap:10px; flex-wrap:wrap; }
+  .pl-hero .lbl{ font-size:12px; color:var(--ink-soft); margin-bottom:2px; }
+  .pl-hero .big{ font-size:22px; font-weight:800; line-height:1.2; }
+  .pl-break{ margin-top:12px; padding:10px 12px; border-radius:12px; background:var(--bg); border:1px solid var(--line); }
+  .pl-title{ font-size:12.5px; font-weight:700; color:var(--ink-soft); margin-bottom:4px; }
+  .pl-row{ display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px dashed var(--line); }
+  .pl-ico{ width:22px; text-align:center; flex-shrink:0; }
+  .pl-txt{ flex:1; min-width:0; display:flex; flex-direction:column; }
+  .pl-txt b{ font-size:13.5px; }
+  .pl-txt span{ font-size:11.5px; color:var(--ink-faint); }
+  .pl-val{ font-weight:700; font-size:14px; flex-shrink:0; }
+  .pl-sum{ display:flex; justify-content:space-between; padding-top:8px; font-weight:800; font-size:14.5px; }
   .admin-link{ text-align:center; padding:14px 0 4px; }
   .admin-link button{ background:none; border:none; color:var(--ink-faint); font-size:11.5px; cursor:pointer; text-decoration:underline; }
   .kv{ display:flex; justify-content:space-between; font-size:13px; padding:6px 0; border-bottom:1px solid var(--line); }
@@ -1450,20 +1462,41 @@ function renderPortfolio(status){
     var rz = L.realized[t.id];
     return '<div class="trade-log-row"><span><span class="' + (t.side==='buy'?'side-buy':'side-sell') + '">' + (t.side==='buy'?'매수':'매도') + '</span> ' + esc(st.name) + ' ' + t.qty + '주</span>' +
       '<span class="mono">' + fmtDateShort(t.ts) + ' · ' + won(t.total) +
-      (rz != null ? '<br><b class="' + pctClass(rz) + '">' + signedWon(rz) + '</b>' : '') + '</span></div>';
+      (rz != null ? '<br><b class="' + pctClass(rz) + '">확정 손익 ' + signedWon(rz) + '</b>' : '') + '</span></div>';
   }).join('') : '<div class="empty">거래 내역이 없어요.</div>';
   return '<main>' +
     '<div class="card">' +
       '<h2>내 자산 — ' + esc(s.name) + '</h2>' +
-      '<div class="grid2">' +
-        '<div class="stat-tile"><div class="lbl">총 평가금액</div><div class="val mono">' + won(total) + '</div></div>' +
-        '<div class="stat-tile"><div class="lbl">수익률</div><div class="val mono ' + pctClass(ret) + '">' + pctStr(ret) + '</div></div>' +
-        '<div class="stat-tile"><div class="lbl">보유 현금</div><div class="val mono">' + won(s.cash) + '</div></div>' +
-        '<div class="stat-tile"><div class="lbl">주식 평가액</div><div class="val mono">' + won(total - s.cash) + '</div></div>' +
-      '</div>' +
+      (function(){
+        var totalPL = total - START_CAPITAL, rest = totalPL - plSum - L.realizedSum;
+        var cls = function(v){ return Math.round(v) === 0 ? '' : pctClass(v); };
+        // 맨 위: 총 평가금액과 총 손익(시작 자본 100만 원 대비)을 크게
+        var hero = '<div class="pl-hero">' +
+          '<div><div class="lbl">총 평가금액</div><div class="big mono">' + won(total) + '</div></div>' +
+          '<div style="text-align:right;"><div class="lbl">총 손익</div><div class="big mono ' + cls(totalPL) + '">' + signedWon(totalPL) + '</div>' +
+            '<div style="font-size:12px;"><b class="mono ' + cls(totalPL) + '">' + pctStr(ret) + '</b> <span style="color:var(--ink-faint);">시작 100만 원 대비</span></div></div>' +
+        '</div>';
+        // 손익이 어디서 났는지: 아직 안 판 것 + 이미 판 것 + 수수료 = 총 손익
+        var row = function(icon, title, sub, v){
+          return '<div class="pl-row"><div class="pl-ico">' + icon + '</div><div class="pl-txt"><b>' + title + '</b><span>' + sub + '</span></div>' +
+            '<div class="pl-val mono ' + cls(v) + '">' + signedWon(v) + '</div></div>';
+        };
+        var breakdown = s.trades.length ? '<div class="pl-break">' +
+          '<div class="pl-title">내 손익은 어디서 났을까?</div>' +
+          row('📈', '아직 안 판 종목', '지금 가진 주식 · 팔아야 확정돼요', plSum) +
+          row('✅', '이미 판 종목', '판 거래의 손익 · 수수료·세금 포함', L.realizedSum) +
+          row('🧾', '수수료', '지금 가진 주식을 살 때 낸 돈', rest) +
+          '<div class="pl-sum"><span>= 총 손익</span><b class="mono ' + cls(totalPL) + '">' + signedWon(totalPL) + '</b></div>' +
+        '</div>' : '';
+        return hero + breakdown +
+          '<div class="grid2" style="margin-top:12px;">' +
+            '<div class="stat-tile"><div class="lbl">보유 현금</div><div class="val mono">' + won(s.cash) + '</div></div>' +
+            '<div class="stat-tile"><div class="lbl">주식 평가액</div><div class="val mono">' + won(total - s.cash) + '</div></div>' +
+          '</div>';
+      })() +
     '</div>' +
     renderReturnChart(s, status) +
-    '<div class="card"><h2>보유 종목' + (holdingsRows.length ? ' <span class="h2-sub ' + pctClass(plSum) + '">평가손익 ' + (plSum >= 0 ? '+' : '') + won(plSum) + '</span>' : '') + '</h2>' + holdingsHtml + '</div>' +
+    '<div class="card"><h2>보유 종목' + (holdingsRows.length ? ' <span class="h2-sub ' + pctClass(plSum) + '">아직 안 판 손익 ' + signedWon(plSum) + '</span>' : '') + '</h2>' + holdingsHtml + '</div>' +
     '<div class="card"><h2>최근 거래 내역</h2>' + tradesHtml + (s.trades.length ? realizedLine : '') + '</div>' +
     '<div class="admin-link"><button id="btn-logout">이 기기에서 로그아웃</button></div>' +
   '</main>';
