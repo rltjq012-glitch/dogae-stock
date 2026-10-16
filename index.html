@@ -139,6 +139,14 @@
   .detail-price{ font-size:30px; font-weight:700; }
   .detail-chg{ font-size:14px; font-weight:600; }
   .chartbox{ width:100%; height:150px; margin:10px 0 2px; }
+  .dchart{ width:100%; height:auto; display:block; margin:6px 0 2px; touch-action:pan-y; cursor:crosshair; -webkit-user-select:none; user-select:none; }
+  .dchart .dc-ax{ font-size:9px; fill:var(--ink-faint); font-family:inherit; }
+  .dchart .dc-hl{ font-size:9.5px; font-weight:700; font-family:inherit; }
+  .dchart .dc-hl.up-text{ fill:var(--up); } .dchart .dc-hl.down-text{ fill:var(--down); }
+  .dchart .dc-tip{ font-size:10px; font-weight:700; fill:var(--surface); font-family:inherit; }
+  .dc-summary{ display:flex; justify-content:space-between; flex-wrap:wrap; gap:4px 12px; font-size:12px; color:var(--ink-soft); margin-top:4px; }
+  .chart-range{ max-width:220px; }
+  .chart-range button{ padding:6px; font-size:12.5px; }
   .segmented{ display:flex; background:var(--surface-2); border-radius:10px; padding:3px; gap:3px; }
   .segmented button{ flex:1; border:none; background:transparent; padding:8px; border-radius:8px; font-size:13px; font-weight:600; color:var(--ink-soft); cursor:pointer; }
   .segmented button.active{ background:var(--surface); color:var(--ink); box-shadow:var(--shadow); }
@@ -1107,6 +1115,103 @@ function chartSvg(values, w, h, strokeColor){
     '<path d="'+line+'" fill="none" stroke="'+strokeColor+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 }
 
+// ---- 종목 상세 차트: 최고·최저 표시, 가격 눈금, 날짜·시각 눈금, 눌러서 그 시각 가격 보기 ----
+var CHART_PTS = null;   // 차트를 누를 때 쓰는 점 목록 {pts:[{x,y,t,p}], W, H, top, bottom}
+function tickTime(t){ return day1Ms() + TICK_REL[t]; }
+function detailChart(stockId, status, color){
+  var end = Math.min(status.idx, TOTAL_TICKS - 1);
+  var start = UI.chartRange === 'today' ? (DAY_OFFSETS[status.day] || 0) : 0;
+  if(start > end) start = end;
+  var full = seriesUpTo(stockId, end);
+  // 최고·최저(같은 값이면 먼저 나온 시점)
+  var hi = start, lo = start;
+  for(var t=start;t<=end;t++){ if(full[t] > full[hi]) hi = t; if(full[t] < full[lo]) lo = t; }
+  // 점이 너무 많으면 고르게 골라내되 최고·최저·끝점은 반드시 포함
+  var n = end - start + 1, maxN = 300, idxs = [];
+  if(n <= maxN){ for(var i=start;i<=end;i++) idxs.push(i); }
+  else { for(var k=0;k<maxN;k++) idxs.push(start + Math.round(k * (n - 1) / (maxN - 1))); }
+  [hi, lo, end].forEach(function(x){ if(idxs.indexOf(x) < 0) idxs.push(x); });
+  idxs.sort(function(a,b){ return a - b; });
+  var W = 360, H = 200, L = 6, R = W - 54, TOP = 18, BOT = H - 24;
+  var minP = full[lo], maxP = full[hi];
+  var pad = (maxP - minP) * 0.08 || Math.max(1, maxP * 0.01);
+  var y0 = minP - pad, y1 = maxP + pad;
+  var X = function(t){ return n <= 1 ? (L + R) / 2 : L + (t - start) / (end - start) * (R - L); };
+  var Y = function(v){ return BOT - (v - y0) / (y1 - y0) * (BOT - TOP); };
+  var pts = idxs.map(function(t){ return { x:X(t), y:Y(full[t]), t:t, p:full[t] }; });
+  CHART_PTS = { pts:pts, W:W, H:H, top:TOP, bottom:BOT };
+  var line = 'M' + pts.map(function(q){ return q.x.toFixed(1) + ',' + q.y.toFixed(1); }).join(' L');
+  var area = line + ' L' + pts[pts.length-1].x.toFixed(1) + ',' + BOT + ' L' + pts[0].x.toFixed(1) + ',' + BOT + ' Z';
+  var svg = [];
+  // 가격 눈금(오른쪽) 3줄
+  [maxP, (maxP + minP) / 2, minP].forEach(function(v){
+    var yy = Y(v).toFixed(1);
+    svg.push('<line x1="' + L + '" x2="' + R + '" y1="' + yy + '" y2="' + yy + '" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 4"/>');
+    svg.push('<text x="' + (R + 4) + '" y="' + (+yy + 3.5) + '" class="dc-ax">' + Math.round(v).toLocaleString('ko-KR') + '</text>');
+  });
+  // 시간 눈금(아래): 전체 기간은 날짜, 오늘은 거래시간 시작 시각. 글자가 겹치면 건너뛴다.
+  var marks = [];
+  if(UI.chartRange === 'today'){
+    var d = DAYS[status.day];
+    d.slots.forEach(function(sl, j){ var t = DAY_OFFSETS[status.day] + DAY_SLOT_TICK_OFFSET[status.day][j]; if(t >= start && t <= end) marks.push({ t:t, label:sl.time }); });
+  } else {
+    for(var dd=0; dd<N_DAYS; dd++){ var t0 = DAY_OFFSETS[dd]; if(t0 >= start && t0 <= end){ var pp = kstPartsFromMs(tickTime(t0)); marks.push({ t:t0, label:pp.mo + '/' + pp.d }); } }
+  }
+  var lastX = -99;
+  marks.forEach(function(mk){
+    var xx = X(mk.t);
+    if(mk.t > start) svg.push('<line x1="' + xx.toFixed(1) + '" x2="' + xx.toFixed(1) + '" y1="' + TOP + '" y2="' + BOT + '" stroke="var(--line)" stroke-width="1"/>');
+    if(xx - lastX >= 30){ svg.push('<text x="' + xx.toFixed(1) + '" y="' + (BOT + 14) + '" class="dc-ax" text-anchor="' + (xx < L + 12 ? 'start' : 'middle') + '">' + mk.label + '</text>'); lastX = xx; }
+  });
+  svg.push('<path d="' + area + '" fill="' + color + '" opacity="0.10" stroke="none"/>');
+  svg.push('<path d="' + line + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>');
+  // 최고·최저 표시
+  var mark = function(t, isHi){
+    var xx = X(t), yy = Y(full[t]), anchor = xx > R - 70 ? 'end' : xx < L + 70 ? 'start' : 'middle';
+    var ty = isHi ? Math.max(TOP - 4, yy - 7) : Math.min(BOT - 3, yy + 14);
+    return '<circle cx="' + xx.toFixed(1) + '" cy="' + yy.toFixed(1) + '" r="3.5" fill="' + (isHi ? 'var(--up)' : 'var(--down)') + '" stroke="var(--surface)" stroke-width="1.5"/>' +
+      '<text x="' + xx.toFixed(1) + '" y="' + ty.toFixed(1) + '" text-anchor="' + anchor + '" class="dc-hl ' + (isHi ? 'up-text' : 'down-text') + '">' +
+      (isHi ? '최고 ' : '최저 ') + full[t].toLocaleString('ko-KR') + ' (' + fmtDateShort(tickTime(t)) + ')</text>';
+  };
+  if(hi !== lo){ svg.push(mark(hi, true)); svg.push(mark(lo, false)); }
+  // 눌렀을 때 보일 안내선·말풍선
+  svg.push('<g id="dc-tip" style="display:none"><line id="dc-tipline" y1="' + TOP + '" y2="' + BOT + '" stroke="var(--ink-soft)" stroke-width="1" stroke-dasharray="2 3"/>' +
+    '<circle id="dc-tipdot" r="4" fill="' + color + '" stroke="var(--surface)" stroke-width="2"/>' +
+    '<rect id="dc-tipbox" rx="5" height="18" fill="var(--ink)" opacity="0.9"/><text id="dc-tiptext" class="dc-tip"></text></g>');
+  var summary = '<div class="dc-summary">' +
+    '<span>' + (UI.chartRange === 'today' ? '오늘' : '전체 기간') + ' <b class="up-text">최고 ' + full[hi].toLocaleString('ko-KR') + '원</b> ' + fmtDateShort(tickTime(hi)) + '</span>' +
+    '<span><b class="down-text">최저 ' + full[lo].toLocaleString('ko-KR') + '원</b> ' + fmtDateShort(tickTime(lo)) + '</span></div>';
+  return '<svg class="dchart" id="dchart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="가격 차트. ' +
+    '최고 ' + full[hi] + '원, 최저 ' + full[lo] + '원">' + svg.join('') + '</svg>' + summary +
+    '<div class="hint" style="margin-top:2px;">차트를 누르거나 손가락으로 밀면 그 시각의 가격이 보여요.</div>';
+}
+function wireDetailChart(){
+  var el = document.getElementById('dchart');
+  if(!el || !CHART_PTS) return;
+  var tip = document.getElementById('dc-tip'), tl = document.getElementById('dc-tipline'), dot = document.getElementById('dc-tipdot');
+  var box = document.getElementById('dc-tipbox'), txt = document.getElementById('dc-tiptext');
+  var show = function(ev){
+    var r = el.getBoundingClientRect(); if(!r.width) return;
+    // viewBox 비율 유지(meet) 보정
+    var scale = Math.min(r.width / CHART_PTS.W, r.height / CHART_PTS.H);
+    var offX = (r.width - CHART_PTS.W * scale) / 2;
+    var vx = (ev.clientX - r.left - offX) / scale;
+    var pts = CHART_PTS.pts, best = pts[0];
+    for(var i=1;i<pts.length;i++){ if(Math.abs(pts[i].x - vx) < Math.abs(best.x - vx)) best = pts[i]; }
+    tip.style.display = '';
+    tl.setAttribute('x1', best.x); tl.setAttribute('x2', best.x);
+    dot.setAttribute('cx', best.x); dot.setAttribute('cy', best.y);
+    txt.textContent = fmtDateShort(tickTime(best.t)) + ' · ' + best.p.toLocaleString('ko-KR') + '원';
+    var tw = (txt.getComputedTextLength ? txt.getComputedTextLength() : 100) + 12;
+    var bx = Math.max(2, Math.min(CHART_PTS.W - tw - 2, best.x - tw / 2));
+    box.setAttribute('x', bx); box.setAttribute('y', 0); box.setAttribute('width', tw);
+    txt.setAttribute('x', bx + 6); txt.setAttribute('y', 12.5);
+  };
+  el.addEventListener('pointerdown', show);
+  el.addEventListener('pointermove', function(ev){ if(ev.pointerType === 'mouse' || ev.buttons || ev.pressure) show(ev); });
+  el.addEventListener('mouseleave', function(){ tip.style.display = 'none'; });
+}
+
 /* ============ 8. TOAST ============ */
 var toastTimer = null;
 function toast(msg){
@@ -1326,7 +1431,12 @@ function renderDetail(status, stockId){
         '<button class="fav-btn' + (isFav(stockId) ? ' on' : '') + '" id="btn-fav" aria-label="관심 종목 ' + (isFav(stockId) ? '해제' : '등록') + '">' + (isFav(stockId) ? '★ 관심' : '☆ 관심') + '</button></div>' +
       '<div class="detail-price mono">' + price.toLocaleString('ko-KR') + '<span style="font-size:14px;">원</span></div>' +
       '<div class="detail-chg mono ' + cls + '">' + pctStr(chg) + ' (전일 대비)</div>' +
-      chartSvg(slice, 320, 150, color) +
+      (status.phase === 'before' ? chartSvg(slice, 320, 150, color) : (
+        '<div class="segmented chart-range" style="margin-top:10px;">' +
+          '<button class="' + (UI.chartRange === 'today' ? '' : 'active') + ' chart-rng" data-rng="all">전체 기간</button>' +
+          '<button class="' + (UI.chartRange === 'today' ? 'active' : '') + ' chart-rng" data-rng="today">오늘</button>' +
+        '</div>' +
+        detailChart(stockId, status, color))) +
     '</div>' +
     '<div class="card stock-about">' +
       '<h2>종목 소개</h2>' +
@@ -2128,6 +2238,10 @@ function wireEvents(){
   if(byId('seg-buy')) byId('seg-buy').addEventListener('click', function(){ UI.tradeSide='buy'; render(); });
   if(byId('seg-sell')) byId('seg-sell').addEventListener('click', function(){ UI.tradeSide='sell'; render(); });
   if(byId('qty-minus')) byId('qty-minus').addEventListener('click', function(){ UI.qty = Math.max(1, UI.qty-1); render(); });
+  document.querySelectorAll('.chart-rng').forEach(function(btn){
+    btn.addEventListener('click', function(){ UI.chartRange = btn.getAttribute('data-rng'); render(); });
+  });
+  wireDetailChart();
   document.querySelectorAll('.rank-div').forEach(function(btn){
     btn.addEventListener('click', function(){ UI.rankDiv = btn.getAttribute('data-div'); render(); });
   });
