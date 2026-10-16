@@ -859,6 +859,14 @@ function currentTotalValue(student, idx){
   for(var id in student.holdings){ v += student.holdings[id] * priceAt(id, idx); }
   return v;
 }
+// 순위·시상은 "저장된 현금·보유 수량"이 아니라 "거래 기록으로 다시 계산한 값"으로 매긴다.
+// 그래야 학생이 개발자도구로 자기 현금 숫자를 바꿔도 순위에 전혀 반영되지 않는다.
+// (ledger() 는 체결 기록만으로 현금·보유를 재계산한다. 거래 기록은 추가만 되고 수정·삭제 불가.)
+function ledgerTotalValue(student, idx){
+  var L = ledger(student), v = L.cash;
+  for(var id in L.pos){ if(L.pos[id].qty > 0) v += L.pos[id].qty * priceAt(id, idx); }
+  return v;
+}
 
 // 참가/재접속. 처음 쓰는 학번·이름이면 입력한 비밀번호가 그 계정의 비밀번호가 되고,
 // 이미 있는 계정이면 비밀번호가 맞아야만 이 기기가 그 학생의 기기로 등록된다(서버 규칙이 판정).
@@ -1579,7 +1587,7 @@ function isRankingBlind(status){
 function rankingRows(status){
   return Object.keys(STATE.students).map(function(key){
     var s = STATE.students[key];
-    var total = currentTotalValue(s, status.idx);
+    var total = ledgerTotalValue(s, status.idx);
     var ret = (total/START_CAPITAL - 1) * 100;
     return { key:key, name:s.name, code:s.code, total:total, ret:ret };
   }).sort(function(a,b){ return b.total - a.total; });
