@@ -314,6 +314,19 @@
   .rank-tabs button{ font-size:13px; padding:8px 2px; }
   .rank-tabs button span{ font-size:11px; color:var(--ink-faint); margin-left:2px; }
   .admin-div-select{ font-size:12px; padding:3px 4px; border-radius:7px; border:1px solid var(--line); background:var(--bg); color:var(--ink); margin-left:4px; width:auto; }
+  .flow-badge{ display:inline-block; margin-top:3px; font-size:10.5px; font-weight:700; padding:1px 7px; border-radius:999px; }
+  .flow-badge.buy{ color:var(--up); background:color-mix(in srgb, var(--up) 12%, transparent); }
+  .flow-badge.sell{ color:var(--down); background:color-mix(in srgb, var(--down) 12%, transparent); }
+  .flow-badge.none{ color:var(--ink-faint); font-weight:500; padding-left:0; }
+  .flow-range{ display:inline-flex; padding:2px; }
+  .flow-range button{ padding:4px 9px; font-size:11.5px; white-space:nowrap; flex:0 0 auto; }
+  .trend-item b{ white-space:nowrap; }
+  .flow-headline{ font-size:13px; margin:6px 0 6px; color:var(--ink-soft); }
+  .flow-headline b{ font-size:16px; }
+  .trend-grid{ display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:12px; }
+  .trend-head{ font-size:12.5px; font-weight:700; margin-bottom:4px; }
+  .trend-item{ display:grid; grid-template-columns:1fr auto; gap:0 6px; padding:6px 0; border-bottom:1px dashed var(--line); font-size:13px; cursor:pointer; }
+  .trend-item small{ grid-column:1 / -1; font-size:11px; color:var(--ink-faint); }
   .admin-link{ text-align:center; padding:14px 0 4px; }
   .admin-link button{ background:none; border:none; color:var(--ink-faint); font-size:11.5px; cursor:pointer; text-decoration:underline; }
   .kv{ display:flex; justify-content:space-between; font-size:13px; padding:6px 0; border-bottom:1px solid var(--line); }
@@ -671,18 +684,55 @@ function seededRand(seed){
 // 호가창(매도 5단계 + 매수 5단계)을 만든다. 실제 거래소처럼 지정가 주문이 쌓이는 구조는
 // 아니며(이 게임은 항상 현재가로 즉시 체결되는 시장가 매매만 지원), 호가 단위·매수/매도
 // 잔량 개념을 보여주기 위한 학습용 시각화다. 같은 틱(idx) 동안에는 같은 잔량이 유지된다.
+// ---- 반 전체 매수세/매도세 (보여 주기만 하고 가격에는 영향 없음) ----
+// 누가 샀는지는 보이지 않고, 종목별 합계(주식 수·거래대금·참여 인원)만 보인다.
+var FLOW_WINDOW_MS = 30 * 60000;
+function classFlow(stockId, sinceMs){
+  var f = { buyQty:0, sellQty:0, buyAmt:0, sellAmt:0, count:0, nBuyers:0, nSellers:0 };
+  var buyers = {}, sellers = {};
+  for(var key in STATE.students){
+    var tr = STATE.students[key].trades || [];
+    for(var i=0;i<tr.length;i++){
+      var t = tr[i];
+      if((stockId && t.stockId !== stockId) || t.ts < sinceMs) continue;
+      f.count++;
+      if(t.side === 'buy'){ f.buyQty += t.qty; f.buyAmt += t.total; buyers[key] = 1; }
+      else { f.sellQty += t.qty; f.sellAmt += t.total; sellers[key] = 1; }
+    }
+  }
+  f.nBuyers = Object.keys(buyers).length; f.nSellers = Object.keys(sellers).length;
+  var tot = f.buyAmt + f.sellAmt;
+  f.buyPct = tot > 0 ? f.buyAmt / tot * 100 : null;      // 거래대금 기준 매수 비중
+  f.net = f.buyAmt - f.sellAmt;
+  return f;
+}
+function todayOpenMs(status){ return day1Ms() + TICK_REL[DAY_OFFSETS[status.day] || 0]; }
+// 최근 30분에 거래가 있으면 30분, 없으면 오늘 전체
+function flowFor(stockId, status){
+  var f = classFlow(stockId, nowMs() - FLOW_WINDOW_MS);
+  if(f.count){ f.label = '최근 30분'; return f; }
+  f = classFlow(stockId, todayOpenMs(status)); f.label = '오늘'; return f;
+}
+function flowBadge(f){
+  if(!f || !f.count) return '<span class="flow-badge none">반 거래 없음</span>';
+  var buy = f.buyPct >= 50, pct = Math.round(buy ? f.buyPct : 100 - f.buyPct);
+  return '<span class="flow-badge ' + (buy ? 'buy' : 'sell') + '">' + f.label + ' ' + (buy ? '매수' : '매도') + ' 우세 ' + pct + '%</span>';
+}
 function buildOrderBook(stockId, status){
   var price = priceAt(stockId, status.idx);
   var unit = tickUnitFor(price);
   var asks = [], bids = [];
+  // 반 친구들의 최근 30분 매수량은 매수 잔량에, 매도량은 매도 잔량에 더해 보여 준다(가까운 호가일수록 많이)
+  var fl = classFlow(stockId, nowMs() - FLOW_WINDOW_MS), wt = [0.4, 0.25, 0.15, 0.12, 0.08];
   for(var i=5;i>=1;i--){
-    asks.push({ price: price + i*unit, qty: Math.floor(seededRand(hashSeed(stockId+':'+status.idx+':ask:'+i)) * 180) + 20 });
+    asks.push({ price: price + i*unit, qty: Math.floor(seededRand(hashSeed(stockId+':'+status.idx+':ask:'+i)) * 180) + 20 + Math.round(fl.sellQty * wt[i-1]) });
   }
   for(var j=1;j<=5;j++){
-    bids.push({ price: price - j*unit, qty: Math.floor(seededRand(hashSeed(stockId+':'+status.idx+':bid:'+j)) * 180) + 20 });
+    bids.push({ price: price - j*unit, qty: Math.floor(seededRand(hashSeed(stockId+':'+status.idx+':bid:'+j)) * 180) + 20 + Math.round(fl.buyQty * wt[j-1]) });
   }
   var maxQty = Math.max.apply(null, asks.concat(bids).map(function(r){ return r.qty; }).concat([1]));
-  return { asks:asks, bids:bids, unit:unit, maxQty:maxQty };
+  var sum = function(a){ return a.reduce(function(x, r){ return x + r.qty; }, 0); };
+  return { asks:asks, bids:bids, unit:unit, maxQty:maxQty, askSum:sum(asks), bidSum:sum(bids), flow:fl };
 }
 
 /* ============ 3. STUDENT IDENTITY ============ */
@@ -1355,7 +1405,7 @@ function renderMarketList(status){
     var slice = seriesUpTo(st.id, status.idx);
     return '<div class="stock-item" data-stock="' + st.id + '">' +
       sparkline(slice, 64, 28, chg>=0 ? 'var(--up)' : 'var(--down)') +
-      '<div class="sp"><div class="nm">' + (isFav(st.id) ? '<span class="fav-mark" aria-label="관심 종목">★</span> ' : '') + esc(st.name) + (st.etf ? ' <span class="tag tag-admin">ETF</span>' : '') + '</div><div class="sector">' + esc(st.sector) + '</div></div>' +
+      '<div class="sp"><div class="nm">' + (isFav(st.id) ? '<span class="fav-mark" aria-label="관심 종목">★</span> ' : '') + esc(st.name) + (st.etf ? ' <span class="tag tag-admin">ETF</span>' : '') + '</div><div class="sector">' + esc(st.sector) + '</div>' + flowBadge(flowFor(st.id, status)) + '</div>' +
       '<div class="price-col"><div class="pr mono">' + price.toLocaleString('ko-KR') + '</div><div class="chg mono ' + cls + '">' + pctStr(chg) + '</div></div>' +
       '</div>';
   }).join('');
@@ -1368,7 +1418,22 @@ function renderMarketList(status){
       '<div class="index-spark">' + sparkline(seriesUpTo(null, status.idx), 120, 44, icolor) + '</div></div>' +
     '<div class="hint" style="margin-top:8px;">10종목 전체의 평균적인 움직임이에요(시작 1,000). 내 수익률이 지수보다 높은지 비교해 보세요.</div>' +
     '</div>';
-  return '<main>' + marketDataBanner(status) + indexCard +
+  // 반 친구들의 매매 동향: 많이 산 종목 / 많이 판 종목 (최근 30분, 없으면 오늘)
+  var flows = STOCKS.map(function(st){ var f = flowFor(st.id, status); f.st = st; return f; }).filter(function(f){ return f.count; });
+  var trendCard = '';
+  if(status.phase !== 'before' && flows.length){
+    var topBuy = flows.filter(function(f){ return f.net > 0; }).sort(function(a,b){ return b.net - a.net; }).slice(0, 3);
+    var topSell = flows.filter(function(f){ return f.net < 0; }).sort(function(a,b){ return a.net - b.net; }).slice(0, 3);
+    var li = function(f, buy){
+      return '<div class="trend-item" data-stock="' + f.st.id + '"><span>' + esc(f.st.name) + '</span><b class="mono ' + (buy ? 'up-text' : 'down-text') + '">' +
+        (buy ? '+' : '−') + Math.abs(Math.round(f.net / 10000)).toLocaleString('ko-KR') + '만 원</b><small>' + f.label + ' · ' + (buy ? f.nBuyers : f.nSellers) + '명</small></div>';
+    };
+    trendCard = '<div class="card"><h2>반 친구들의 매매 동향</h2>' +
+      '<div class="trend-grid"><div><div class="trend-head up-text">많이 사는 종목</div>' + (topBuy.length ? topBuy.map(function(f){ return li(f, true); }).join('') : '<div class="hint" style="margin:0;">없음</div>') + '</div>' +
+      '<div><div class="trend-head down-text">많이 파는 종목</div>' + (topSell.length ? topSell.map(function(f){ return li(f, false); }).join('') : '<div class="hint" style="margin:0;">없음</div>') + '</div></div>' +
+      '<div class="hint" style="margin-top:8px;">산 금액에서 판 금액을 뺀 값이에요. 반 전체의 움직임일 뿐 주가에는 영향을 주지 않아요. 따라 사기 전에 이유를 생각해 보세요!</div></div>';
+  }
+  return '<main>' + marketDataBanner(status) + indexCard + trendCard +
     '<div class="card"><h2>전 종목 시세 (' + STOCKS.length + '종목)</h2>' + rows + '</div>' +
     '</main>';
 }
@@ -1390,9 +1455,11 @@ function renderDetail(status, stockId){
   var color = chg>=0 ? 'var(--up)' : 'var(--down)';
   var slice = seriesUpTo(stockId, status.idx); // full history to date (거래 가능 시간대는 1분 단위라 틱 수가 더 많다)
   var range = todayRange(stockId, status);
-  var vol = classVolume(stockId);
+  var fr = UI.flowRange || '30';
+  var since = fr === '30' ? nowMs() - FLOW_WINDOW_MS : fr === 'today' ? todayOpenMs(status) : 0;
+  var vol = classFlow(stockId, since);
   var volTotal = vol.buyQty + vol.sellQty;
-  var buyPct = volTotal > 0 ? (vol.buyQty / volTotal * 100) : 50;
+  var buyPct = vol.buyPct == null ? 50 : vol.buyPct;
   var sellPct = 100 - buyPct;
   var me = UI.me, student = me ? STATE.students[me.key] : null;
   var have = student ? (student.holdings[stockId]||0) : 0;
@@ -1453,19 +1520,24 @@ function renderDetail(status, stockId){
         '<div class="stat-tile"><div class="lbl">오늘 저가</div><div class="val mono down-text">' + range.low.toLocaleString('ko-KR') + '원</div></div>' +
       '</div>' +
       '<div class="divider"></div>' +
-      '<div class="vol-row"><span>반 전체 누적 매수/매도량</span><span>총 ' + volTotal + '주 체결</span></div>' +
+      '<div class="vol-row" style="align-items:center;"><span style="font-weight:700;">반 전체 매수세 · 매도세</span>' +
+        '<span class="segmented flow-range">' + [['30','30분'],['today','오늘'],['all','전체']].map(function(o){
+          return '<button class="flow-rng' + (fr === o[0] ? ' active' : '') + '" data-fr="' + o[0] + '">' + o[1] + '</button>'; }).join('') + '</span></div>' +
+      '<div class="flow-headline">' + (vol.count ? ('<b class="' + (buyPct >= 50 ? 'up-text' : 'down-text') + '">' + (buyPct >= 50 ? '매수 우세 ' + Math.round(buyPct) : '매도 우세 ' + Math.round(sellPct)) + '%</b> <span>(거래대금 기준 · 총 ' + volTotal + '주 체결)</span>') : '<span>이 기간에는 반 친구들의 거래가 없어요.</span>') + '</div>' +
       '<div class="vol-bar">' +
         (volTotal > 0
           ? '<div class="buy-seg" style="width:' + buyPct.toFixed(1) + '%"></div><div class="sell-seg" style="width:' + sellPct.toFixed(1) + '%"></div>'
           : '') +
       '</div>' +
-      '<div class="vol-row"><span class="up-text">매수 ' + vol.buyQty + '주 (' + vol.buyCount + '건)</span><span class="down-text">매도 ' + vol.sellQty + '주 (' + vol.sellCount + '건)</span></div>' +
+      '<div class="vol-row"><span class="up-text">매수 ' + vol.buyQty + '주 · ' + vol.nBuyers + '명 · ' + won(vol.buyAmt) + '</span><span class="down-text">매도 ' + vol.sellQty + '주 · ' + vol.nSellers + '명 · ' + won(vol.sellAmt) + '</span></div>' +
     '</div>' +
     '<div class="card">' +
       '<h2>호가창</h2>' +
       hogaAskRows +
       '<div class="hoga-mid mono">' + price.toLocaleString('ko-KR') + '원</div>' +
       hogaBidRows +
+      '<div class="vol-row" style="margin-top:6px;"><span class="down-text">매도 잔량 ' + book.askSum.toLocaleString('ko-KR') + '</span><span class="up-text">매수 잔량 ' + book.bidSum.toLocaleString('ko-KR') + '</span></div>' +
+      (book.flow.count ? '<div class="hint" style="margin-top:2px;">반 친구들의 최근 30분 매수 ' + book.flow.buyQty + '주·매도 ' + book.flow.sellQty + '주가 잔량에 더해져 있어요.</div>' : '') +
       '<div class="hint">실제 체결은 항상 지금 가격으로 즉시 이뤄져요. 호가창은 호가 단위(이 종목은 ' + book.unit.toLocaleString('ko-KR') + '원 단위)와 매도·매수 잔량 개념을 보여주는 학습용 화면이에요.</div>' +
     '</div>' +
     (student ? (
@@ -2238,6 +2310,12 @@ function wireEvents(){
   if(byId('seg-buy')) byId('seg-buy').addEventListener('click', function(){ UI.tradeSide='buy'; render(); });
   if(byId('seg-sell')) byId('seg-sell').addEventListener('click', function(){ UI.tradeSide='sell'; render(); });
   if(byId('qty-minus')) byId('qty-minus').addEventListener('click', function(){ UI.qty = Math.max(1, UI.qty-1); render(); });
+  document.querySelectorAll('.flow-rng').forEach(function(btn){
+    btn.addEventListener('click', function(){ UI.flowRange = btn.getAttribute('data-fr'); render(); });
+  });
+  document.querySelectorAll('.trend-item[data-stock]').forEach(function(el){
+    el.addEventListener('click', function(){ UI.detailStock = el.getAttribute('data-stock'); UI.qty = 1; UI.tradeSide = 'buy'; render(); });
+  });
   document.querySelectorAll('.chart-rng').forEach(function(btn){
     btn.addEventListener('click', function(){ UI.chartRange = btn.getAttribute('data-rng'); render(); });
   });
