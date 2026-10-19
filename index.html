@@ -327,6 +327,9 @@
   .trend-head{ font-size:12.5px; font-weight:700; margin-bottom:4px; }
   .trend-item{ display:grid; grid-template-columns:1fr auto; gap:0 6px; padding:6px 0; border-bottom:1px dashed var(--line); font-size:13px; cursor:pointer; }
   .trend-item small{ grid-column:1 / -1; font-size:11px; color:var(--ink-faint); }
+  .lock-tag{ display:inline-block; font-size:10.5px; font-weight:700; color:#fff; background:var(--down); border-radius:999px; padding:1px 7px; margin:0 4px; }
+  .fail-tag{ display:inline-block; font-size:10.5px; font-weight:700; color:var(--down); background:color-mix(in srgb, var(--down) 12%, transparent); border-radius:999px; padding:1px 7px; margin:0 4px; }
+  .admin-student-row.locked{ background:color-mix(in srgb, var(--down) 7%, transparent); border-radius:8px; }
   .admin-link{ text-align:center; padding:14px 0 4px; }
   .admin-link button{ background:none; border:none; color:var(--ink-faint); font-size:11.5px; cursor:pointer; text-decoration:underline; }
   .kv{ display:flex; justify-content:space-between; font-size:13px; padding:6px 0; border-bottom:1px solid var(--line); }
@@ -792,7 +795,8 @@ function applyConfig(v){
     customNotices: list,
     adminSet: v.adminSet === true,
     day1Ms: typeof v.day1Ms === 'number' ? v.day1Ms : null,
-    divisions: (v.divisions && typeof v.divisions === 'object') ? v.divisions : {}   // 선생님이 직접 지정한 부문(학생key → high|mid)
+    divisions: (v.divisions && typeof v.divisions === 'object') ? v.divisions : {},   // 선생님이 직접 지정한 부문(학생key → high|mid)
+    locked: (v.locked && typeof v.locked === 'object') ? v.locked : {}   // 선생님이 잠근 계정(학생key → true). 새 기기 로그인 차단.
   };
 }
 
@@ -933,9 +937,36 @@ function ledgerTotalValue(student, idx){
 
 // 참가/재접속. 처음 쓰는 학번·이름이면 입력한 비밀번호가 그 계정의 비밀번호가 되고,
 // 이미 있는 계정이면 비밀번호가 맞아야만 이 기기가 그 학생의 기기로 등록된다(서버 규칙이 판정).
+// ---- 로그인 보호(비밀번호 도용 방지) ----
+// 같은 기기에서 비밀번호를 5번 틀리면 15분 동안 그 계정 로그인을 막는다(일반적인 추측 차단).
+var LOGIN_MAX_FAILS = 5, LOGIN_LOCK_MS = 15 * 60000;
+function loadLoginLock(){ try{ return JSON.parse(localStorage.getItem('msi_loginlock') || '{}') || {}; }catch(e){ return {}; } }
+function saveLoginLock(m){ try{ localStorage.setItem('msi_loginlock', JSON.stringify(m)); }catch(e){} }
+function loginLockLeft(key){ var e = loadLoginLock()[key]; return (e && e.until && e.until > Date.now()) ? e.until - Date.now() : 0; }
+function recordLoginFail(key){
+  var m = loadLoginLock(), e = m[key] || { n:0 };
+  e.n = (e.n || 0) + 1;
+  if(e.n >= LOGIN_MAX_FAILS) e.until = Date.now() + LOGIN_LOCK_MS;
+  m[key] = e; saveLoginLock(m);
+  // 선생님이 "누가 여러 번 틀렸는지" 볼 수 있게 이 기기 칸에 실패 횟수를 기록(있는 그대로, best-effort)
+  if(FB.db && FB.uid){
+    var ref = FB.db.ref('loginfails/' + key + '/' + FB.uid);
+    ref.once('value').then(function(s){ ref.set(Math.min(1000, (+s.val() || 0) + 1)); }, function(){});
+  }
+  return e.n;
+}
+function clearLoginFail(key){
+  var m = loadLoginLock(); if(m[key]){ delete m[key]; saveLoginLock(m); }
+  if(FB.db && FB.uid) FB.db.ref('loginfails/' + key + '/' + FB.uid).set(0).catch(function(){});
+}
 function loginStudent(code, name, pin){
   var key = studentKeyOf(code, name);
   if(!key || key === '_') return Promise.reject({ ui:'학년/반/번호와 이름을 확인하세요.' });
+  if(STATE.config.locked && STATE.config.locked[key] === true)
+    return Promise.reject({ ui:'이 계정은 선생님이 잠갔어요. 선생님께 문의하세요.' });
+  var left = loginLockLeft(key);
+  if(left > 0)
+    return Promise.reject({ ui:'비밀번호를 여러 번 틀렸어요. ' + Math.ceil(left / 60000) + '분 뒤에 다시 시도하거나 선생님께 문의하세요.' });
   UI.joining = true;
   var h = null;
   return pinHash(key, pin).then(function(hash){
@@ -946,7 +977,13 @@ function loginStudent(code, name, pin){
     });
   }).then(function(){
     return FB.db.ref('owners/' + key + '/' + FB.uid).set(h).then(null, function(err){
-      if(isDenied(err)) throw { ui:'비밀번호가 맞지 않아요. 이미 참가한 학번·이름이라면 처음에 정한 비밀번호를 입력하세요.' };
+      if(isDenied(err)){
+        // 선생님이 그사이 잠갔을 수도 있다
+        if(STATE.config.locked && STATE.config.locked[key] === true) throw { ui:'이 계정은 선생님이 잠갔어요. 선생님께 문의하세요.' };
+        var n = recordLoginFail(key), rest = LOGIN_MAX_FAILS - n;
+        if(rest > 0) throw { ui:'비밀번호가 맞지 않아요. (' + rest + '번 더 틀리면 15분 동안 잠겨요) 처음에 정한 비밀번호를 입력하세요.' };
+        throw { ui:'비밀번호를 ' + LOGIN_MAX_FAILS + '번 틀려 15분 동안 잠겼어요. 잠시 뒤 다시 시도하거나 선생님께 문의하세요.' };
+      }
       throw err;
     });
   }).then(function(){
@@ -958,6 +995,7 @@ function loginStudent(code, name, pin){
       joinedAt: firebase.database.ServerValue.TIMESTAMP
     });
   }).then(function(){
+    clearLoginFail(key);
     UI.me = { key:key, code:code, name:name };
     saveMe(UI.me);
     UI.joining = false; UI.sessionChecked = true;
@@ -1103,7 +1141,22 @@ function adminAddNotice(title, body){
 // 비밀번호만 초기화: 자산은 그대로 두고, 다음에 그 학번·이름으로 들어오는 사람이 새 비밀번호를 정한다.
 function adminResetPin(key){
   var upd = {}; upd['secrets/' + key] = null; upd['owners/' + key] = null;
+  upd['config/locked/' + key] = null; upd['loginfails/' + key] = null;   // 초기화하면 잠금·실패기록도 함께 푼다
   return FB.db.ref().update(upd);
+}
+// 계정 잠금/해제: 잠그면 규칙이 새 기기 로그인을 막는다. 이미 로그인한 기기에는 영향 없음.
+function adminSetLock(key, locked){
+  if(locked) return FB.db.ref('config/locked/' + key).set(true);
+  var upd = {}; upd['config/locked/' + key] = null; upd['loginfails/' + key] = null;
+  return FB.db.ref().update(upd);
+}
+// 로그인 실패 기록 불러오기(선생님만). 기기별 실패 횟수를 계정별로 합산.
+function adminLoadFails(){
+  return FB.db.ref('loginfails').once('value').then(function(s){ UI.adminFails = s.val() || {}; });
+}
+function failsOf(key){
+  var f = (UI.adminFails || {})[key]; if(!f) return 0;
+  var n = 0; for(var u in f){ n += (+f[u] || 0); } return n;
 }
 function adminDeleteStudent(key){
   var upd = {};
@@ -1112,7 +1165,8 @@ function adminDeleteStudent(key){
 }
 function adminResetAll(){
   var upd = {};
-  ['students','trades','journal','owners','secrets'].forEach(function(n){ upd[n] = null; });
+  ['students','trades','journal','owners','secrets','loginfails'].forEach(function(n){ upd[n] = null; });
+  upd['config/locked'] = null;
   return FB.db.ref().update(upd);
 }
 
@@ -2076,9 +2130,12 @@ function renderAdminModal(){
       var on = (o[0] === 'auto' && !ov) || o[0] === ov;
       return '<option value="' + o[0] + '"' + (on ? ' selected' : '') + '>' + o[1] + '</option>';
     }).join('');
-    return '<div class="admin-student-row"><span><b class="mono">' + esc(s.code) + '</b> ' + esc(s.name) +
+    var locked = (cfg.locked || {})[key] === true, nf = failsOf(key);
+    return '<div class="admin-student-row' + (locked ? ' locked' : '') + '"><span><b class="mono">' + esc(s.code) + '</b> ' + esc(s.name) +
+        (locked ? ' <span class="lock-tag">잠김</span>' : (nf >= 3 ? ' <span class="fail-tag">로그인 실패 ' + nf + '회</span>' : '')) +
         ' <select class="admin-div-select" data-key="' + esc(key) + '" aria-label="부문">' + opts + '</select></span>' +
       '<span style="display:flex;gap:6px;">' +
+        '<button class="btn btn-ghost admin-lock" data-key="' + esc(key) + '" data-lock="' + (locked ? '0' : '1') + '">' + (locked ? '잠금 해제' : '계정 잠금') + '</button>' +
         '<button class="btn btn-ghost admin-reset-pin" data-key="' + esc(key) + '">비밀번호 초기화</button>' +
         '<button class="btn btn-ghost admin-delete-student" data-key="' + esc(key) + '">삭제</button>' +
       '</span></div>';
@@ -2115,6 +2172,19 @@ function renderAdminModal(){
       '<input type="password" id="admin-pw-new" placeholder="새 비밀번호 (6자 이상)" autocomplete="new-password"></div>' +
     '<button class="btn btn-ghost" id="admin-save-pw">비밀번호 변경</button>' +
     '<hr class="divider">' +
+    (function(){
+      var lk = Object.keys(cfg.locked || {}).filter(function(k){ return cfg.locked[k] === true; });
+      var hot = UI.adminFails ? Object.keys(UI.adminFails).map(function(k){ return { key:k, n:failsOf(k) }; }).filter(function(x){ return x.n >= 3 && !(cfg.locked || {})[x.key]; }).sort(function(a,b){ return b.n - a.n; }) : null;
+      return '<label>로그인 보호</label>' +
+        '<div class="hint" style="margin:0 0 6px;">같은 기기에서 비밀번호를 5번 틀리면 그 기기는 15분 동안 잠겨요. 특정 학생 계정을 아예 막으려면 아래 목록에서 <b>계정 잠금</b>을 누르세요(새 기기 로그인이 막혀요). 다른 학생 비밀번호를 떠보는 계정이 있으면 여기서 찾을 수 있어요.</div>' +
+        (lk.length ? '<div class="kv"><span>잠긴 계정</span><b class="down-text">' + lk.map(function(k){ var ss = STATE.students[k]; return esc(ss ? ss.code + ' ' + ss.name : k); }).join(', ') + '</b></div>' : '') +
+        (UI.adminFails == null
+          ? '<button class="btn btn-ghost" id="admin-load-fails">로그인 실패 기록 보기</button>'
+          : (hot.length
+             ? '<div class="hint" style="margin:0 0 4px;">로그인 실패가 많은 계정(3회 이상):</div>' + hot.slice(0, 12).map(function(x){ var ss = STATE.students[x.key]; return '<div class="kv"><span>' + esc(ss ? ss.code + ' ' + ss.name : x.key) + '</span><b class="down-text">실패 ' + x.n + '회</b></div>'; }).join('') + '<button class="btn btn-ghost" id="admin-load-fails" style="margin-top:4px;">새로고침</button>'
+             : '<div class="hint" style="margin:0;">로그인 실패가 많은 계정은 없어요. <button class="btn btn-ghost" id="admin-load-fails" style="display:inline;width:auto;padding:2px 8px;">새로고침</button></div>')) +
+        '<hr class="divider">';
+    })() +
     '<label>학생 계정 관리</label>' +
     '<div class="hint" style="margin:0 0 6px;">비밀번호를 잊은 학생은 <b>비밀번호 초기화</b>를 누르면 자산은 그대로 두고 새 비밀번호로 다시 들어올 수 있어요. <b>삭제</b>는 그 학생의 자산·거래·매매일지를 모두 지워요. 이름 옆 칸에서 <b>부문(고등부·중등부)</b>을 직접 바꿀 수 있어요. 원래 이름이 &lsquo;중&rsquo;으로 끝나는 고등학생(예: 김민중)은 여기서 고등부로 바꿔 주세요.</div>' +
     '<div id="admin-student-list">' + studentRows + '</div>' +
@@ -2371,7 +2441,7 @@ function wireEvents(){
   /* ---- 관리자 ---- */
   var closeAdmin = function(){
     var wasUnlocked = UI.adminUnlocked;
-    UI.adminOpen = false; UI.adminUnlocked = false; UI.adminJournal = null; UI.adminJournalOpen = null;
+    UI.adminOpen = false; UI.adminUnlocked = false; UI.adminJournal = null; UI.adminJournalOpen = null; UI.adminFails = null;
     if(wasUnlocked && FB.uid) FB.db.ref('admins/' + FB.uid).remove().then(null, function(){});
     renderPending = false;
     render();
@@ -2469,6 +2539,19 @@ function wireEvents(){
       var v = byId('admin-pw-new').value;
       if(v.length < 6){ toast('새 비밀번호는 6자 이상으로 정해 주세요.'); return; }
       adminChangePassword(v).then(function(){ toast('비밀번호를 변경했어요.'); if(byId('admin-pw-new')) byId('admin-pw-new').value = ''; }, function(err){ failToast(err); });
+    });
+  }
+  document.querySelectorAll('.admin-lock').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var key = btn.getAttribute('data-key'), on = btn.getAttribute('data-lock') === '1', s = STATE.students[key];
+      if(!s) return;
+      if(on && !confirm(s.code + ' ' + s.name + ' 계정을 잠글까요? 새 기기에서 로그인할 수 없게 돼요(이미 접속 중인 기기는 그대로예요). 비밀번호 초기화로 풀 수 있어요.')) return;
+      adminSetLock(key, on).then(function(){ toast(on ? '잠갔어요: ' + s.name : '잠금을 해제했어요: ' + s.name); render(); }, function(err){ failToast(err); });
+    });
+  });
+  if(byId('admin-load-fails')){
+    byId('admin-load-fails').addEventListener('click', function(){
+      adminLoadFails().then(function(){ render(); }, function(err){ failToast(err, '불러오지 못했어요.'); });
     });
   }
   document.querySelectorAll('.admin-reset-pin').forEach(function(btn){
